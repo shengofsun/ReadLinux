@@ -1395,12 +1395,16 @@ long con_init(long kmem_start)
 	int orig_x = ORIG_X;
 	int orig_y = ORIG_Y;
 
+    /* 这里的大量信息都是从screen_info中获取的，该结构体的定义在main函数的模块中，是从汇编部分的字段中拷贝来的 
+     * 可以以此为关键字在main中进行搜索 */
 	vc_scrmembuf = (unsigned short *) kmem_start;
 	video_num_columns = ORIG_VIDEO_COLS;
 	video_size_row = video_num_columns * 2;
 	video_num_lines = ORIG_VIDEO_LINES;
 	video_page = ORIG_VIDEO_PAGE;
 	screen_size = (video_num_lines * video_size_row);
+
+    /* 内存要挪一段出来作为显示终端的字符缓存 */
 	kmem_start += NR_CONSOLES * screen_size;
 	timer_table[BLANK_TIMER].fn = blank_screen;
 	timer_table[BLANK_TIMER].expires = 0;

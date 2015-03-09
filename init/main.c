@@ -406,7 +406,10 @@ asmlinkage void start_kernel(void)
 	memory_start += prof_len * sizeof(unsigned long);
 #endif
 	memory_start = kmalloc_init(memory_start,memory_end);
+    /* 初始化字符设备：tty, console, 键盘，鼠标，串口，打印机等。
+       设置好结构体对应的操作，初始化中断响应函数 */
 	memory_start = chr_dev_init(memory_start,memory_end);
+    /* 块设备，各种硬盘，文件ll_rw_blk.c */
 	memory_start = blk_dev_init(memory_start,memory_end);
 	sti();
 	calibrate_delay();
