@@ -39,10 +39,14 @@ static unsigned char cache_21 = 0xff;
 static unsigned char cache_A1 = 0xff;
 
 unsigned long intr_count = 0;
+/* 以下三个函数是为处理bottom_half而设置的
+ * bh_active用来标记某个irq的bottom_half是否需要处理
+ * bh_mask用来标记某个irq的bottom_half有没有注册 */
 unsigned long bh_active = 0;
 unsigned long bh_mask = 0xFFFFFFFF;
 struct bh_struct bh_base[32]; 
 
+/* 屏蔽某个irq */
 void disable_irq(unsigned int irq_nr)
 {
 	unsigned long flags;
@@ -62,7 +66,7 @@ void disable_irq(unsigned int irq_nr)
 	outb(cache_A1,0xA1);
 	restore_flags(flags);
 }
-
+/* 允许某个irq */
 void enable_irq(unsigned int irq_nr)
 {
 	unsigned long flags;
@@ -221,6 +225,9 @@ asmlinkage void do_fast_IRQ(int irq)
 	sa->sa_handler(irq);
 }
 
+/*
+ * 为irq中断注册处理函数
+ */
 int irqaction(unsigned int irq, struct sigaction * new_sa)
 {
 	struct sigaction * sa;
@@ -234,7 +241,9 @@ int irqaction(unsigned int irq, struct sigaction * new_sa)
 	if (!new_sa->sa_handler)
 		return -EINVAL;
 	save_flags(flags);
-	cli();
+
+	/* 这里是对中断数组的全局修改，需要关中断 */
+	cli(); 
 	*sa = *new_sa;
 	sa->sa_mask = 1;
 	if (sa->sa_flags & SA_INTERRUPT)
@@ -253,7 +262,8 @@ int irqaction(unsigned int irq, struct sigaction * new_sa)
 	restore_flags(flags);
 	return 0;
 }
-		
+
+/* 为中断irq注册处理函数 */
 int request_irq(unsigned int irq, void (*handler)(int))
 {
 	struct sigaction sa;
@@ -264,7 +274,7 @@ int request_irq(unsigned int irq, void (*handler)(int))
 	sa.sa_restorer = NULL;
 	return irqaction(irq,&sa);
 }
-
+/* 释放irq的处理函数 */
 void free_irq(unsigned int irq)
 {
 	struct sigaction * sa = irq + irq_sigaction;

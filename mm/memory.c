@@ -248,14 +248,17 @@ int copy_page_tables(struct task_struct * tsk)
 			if (!pg)
 				continue;
 			if (!(pg & PAGE_PRESENT)) {
+				/* 当页表项的present位为0的时候，页表项表示其在交换分区中的信息 */
 				*new_page_table = swap_duplicate(pg);
 				continue;
 			}
+			/* 如果是copy on write的页，则将页属性修改为只读 */
 			if ((pg & (PAGE_RW | PAGE_COW)) == (PAGE_RW | PAGE_COW))
 				pg &= ~PAGE_RW;
 			*new_page_table = pg;
 			if (mem_map[MAP_NR(pg)] & MAP_PAGE_RESERVED)
 				continue;
+			/* 可能改掉了PAGE_RW属性，所以原来的页表对应项也跟着修改 */
 			*old_page_table = pg;
 			mem_map[MAP_NR(pg)]++;
 		}
@@ -1005,6 +1008,7 @@ void show_mem(void)
  * This routines also unmaps the page at virtual kernel address 0, so
  * that we can trap those pesky NULL-reference errors in the kernel.
  */
+/* 函数将从0~end_mem的内存全部映射到内核空间中. 这样后面的代码就可以直接访问这些内存 */
 unsigned long paging_init(unsigned long start_mem, unsigned long end_mem)
 {
 	unsigned long * pg_dir;
@@ -1067,18 +1071,26 @@ void mem_init(unsigned long start_low_mem,
 	high_memory = end_mem;
 	start_mem +=  0x0000000f;
 	start_mem &= ~0x0000000f;
+
+	/* tmp为物理内存的总的页数 */
 	tmp = MAP_NR(end_mem);
+	/* mem_map为一个unsigned short数组，每个内存页一项 */
 	mem_map = (unsigned short *) start_mem;
 	p = mem_map + tmp;
 	start_mem = (unsigned long) p;
+
+	/* 所有的内存页先初始化为MAP_PAGE_RESERVED */
 	while (p > mem_map)
 		*--p = MAP_PAGE_RESERVED;
+	/* start_low_mem和start_mem要对其到整内存页，因为是按页分配的 */
 	start_low_mem = PAGE_ALIGN(start_low_mem);
 	start_mem = PAGE_ALIGN(start_mem);
+	/* 空闲的low_mem的map项先清零。在Intel下，A0000~100000是预留的 */
 	while (start_low_mem < 0xA0000) {
 		mem_map[MAP_NR(start_low_mem)] = 0;
 		start_low_mem += PAGE_SIZE;
 	}
+	/* 空闲的mem的map项清零 */
 	while (start_mem < end_mem) {
 		mem_map[MAP_NR(start_mem)] = 0;
 		start_mem += PAGE_SIZE;
@@ -1088,6 +1100,8 @@ void mem_init(unsigned long start_low_mem,
 #endif
 	free_page_list = 0;
 	nr_free_pages = 0;
+	/* 该循环有两个作用：(1)统计已经分配出去的内存页reserve、code、和data
+	   (2)将空闲的物理内存串成一个链表，使用每个内存页的头4个字节指向下一个内存页 */
 	for (tmp = 0 ; tmp < end_mem ; tmp += PAGE_SIZE) {
 		if (mem_map[MAP_NR(tmp)]) {
 			if (tmp >= 0xA0000 && tmp < 0x100000)

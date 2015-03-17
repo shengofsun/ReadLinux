@@ -133,6 +133,7 @@ unsigned long swap_duplicate(unsigned long entry)
 
 	if (!entry)
 		return 0;
+	/* 交换分区页表项的信息:12~31位表示交换分区索引；1~11位表示type；0位为present位 */
 	offset = SWP_OFFSET(entry);
 	type = SWP_TYPE(entry);
 	if (type == SHM_SWP_TYPE)
@@ -550,6 +551,14 @@ void free_page(unsigned long addr)
  * will make *no* jumps for the normal code. Don't touch unless you
  * know what you are doing.
  */
+/*
+ * 从链表头部取一个内存页，返回，并记录到循环队列last_free_pages中
+
+ * 值得注意的几点：
+ * (1) 中断的处理方法。先用cli确保关掉中断，因为这段代码有queue, index两个变量需要做临界区保护。
+ * 所以必须先关中断。最后用restore_flags的方式恢复eflags位，保证回到原来的状态。
+ * (2) if的条件判断比较值得学习，把经常执行的代码放到if-case中，使得处理器的分支预测能够更好执行。
+ */
 #define REMOVE_FROM_MEM_QUEUE(queue,nr) \
 	cli(); \
 	if ((result = queue) != 0) { \
@@ -558,7 +567,7 @@ void free_page(unsigned long addr)
 			if (!mem_map[MAP_NR(result)]) { \
 				mem_map[MAP_NR(result)] = 1; \
 				nr--; \
-last_free_pages[index = (index + 1) & (NR_LAST_FREE_PAGES - 1)] = result; \
+				last_free_pages[index = (index + 1) & (NR_LAST_FREE_PAGES - 1)] = result; \
 				restore_flags(flag); \
 				return result; \
 			} \
@@ -595,6 +604,8 @@ unsigned long __get_free_page(int priority)
 	   Is this code reentrant? */
 
 	if (intr_count && priority != GFP_ATOMIC) {
+		/* 从这里可以看出，在中断上下文中，内存页的获取实时性要求还是比较高的。它会把priority强制修改成　
+		 * GFP_ATOMIC。这对于一个中断处理是非常必要的。*/
 		printk("gfp called nonatomically from interrupt %08lx\n",
 			((unsigned long *)&priority)[-1]);
 		priority = GFP_ATOMIC;
@@ -602,6 +613,10 @@ unsigned long __get_free_page(int priority)
 	save_flags(flag);
 repeat:
 	REMOVE_FROM_MEM_QUEUE(free_page_list,nr_free_pages);
+	/* 这段代码可以看出内核对不同的内存页请求的不同处理方式：
+	   1. GFP_BUFFER: 如果freelist中没有内存页，就直接返回。
+	   2. GFP_KERNEL, GFP_USER: 如果没有内存页，就永远等待内核做内存的交换，直到分配到物理内存 
+	   3. GFP_ATOMIC: 和GFP_BUFFER一样，不会睡眠。但是会试着从secondary_page_list中释放内存 */
 	if (priority == GFP_BUFFER)
 		return 0;
 	if (priority != GFP_ATOMIC)

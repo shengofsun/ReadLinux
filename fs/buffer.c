@@ -49,7 +49,9 @@ extern int check_mcd_media_change(int, int);
 static int grow_buffers(int pri, int size);
 
 static struct buffer_head * hash_table[NR_HASH];
+/* free_list表示可用的缓存区双向链表 */
 static struct buffer_head * free_list = NULL;
+/* unused_list表示可用的缓存区头指针的单链表 */
 static struct buffer_head * unused_list = NULL;
 static struct wait_queue * buffer_wait = NULL;
 
@@ -608,6 +610,7 @@ static void put_unused_buffer_head(struct buffer_head * bh)
 	unused_list = bh;
 }
 
+/* 分配一页物理内存，作为buffer_head结构体分配，串到unused_list链表中 */
 static void get_more_buffer_heads(void)
 {
 	int i;
@@ -654,10 +657,13 @@ static struct buffer_head * create_buffers(unsigned long page, unsigned long siz
 
 	head = NULL;
 	offset = PAGE_SIZE;
-	while ((offset -= size) < PAGE_SIZE) {
+	
+	/* 因为offset是unsigned long, 所以当offset从0下溢后，while循环结束 */
+	while ((offset -= size) < PAGE_SIZE) { 
 		bh = get_unused_buffer_head();
 		if (!bh)
 			goto no_grow;
+		/* b_this_page字段，将共用一页内存作为buffer缓存区的buffer_head串在一起 */
 		bh->b_this_page = head;
 		head = bh;
 		bh->b_data = (char *) (page+offset);
@@ -666,6 +672,7 @@ static struct buffer_head * create_buffers(unsigned long page, unsigned long siz
 	return head;
 /*
  * In case anything failed, we just free everything we got.
+ * 一整页page缓存如果不能够分配完毕，就全部释放掉
  */
 no_grow:
 	bh = head;
@@ -880,6 +887,8 @@ static int grow_buffers(int pri, int size)
 	tmp = bh;
 	while (1) {
 		if (free_list) {
+			/* buffer_head的b_next_free和b_prev_free串在
+			   free_list中，free_list表示可用的缓存区 */
 			tmp->b_next_free = free_list;
 			tmp->b_prev_free = free_list->b_prev_free;
 			free_list->b_prev_free->b_next_free = tmp;
@@ -889,13 +898,15 @@ static int grow_buffers(int pri, int size)
 			tmp->b_next_free = tmp;
 		}
 		free_list = tmp;
-		++nr_buffers;
+		++nr_buffers; //nr_buffers表示可用缓存区的个数
 		if (tmp->b_this_page)
 			tmp = tmp->b_this_page;
 		else
 			break;
 	}
+	/* 这样就把b_this_page串成了循环链表 */
 	tmp->b_this_page = bh;
+	/* buffermem表示缓存区内存的总大小 */
 	buffermem += PAGE_SIZE;
 	return 1;
 }
@@ -1018,6 +1029,7 @@ void buffer_init(void)
 	for (i = 0 ; i < NR_HASH ; i++)
 		hash_table[i] = NULL;
 	free_list = 0;
+	/* 分配一页内存的buffer */
 	grow_buffers(GFP_KERNEL, BLOCK_SIZE);
 	if (!free_list)
 		panic("VFS: Unable to initialize buffer free list!");

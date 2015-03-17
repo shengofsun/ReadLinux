@@ -123,6 +123,19 @@ extern void enable_irq(unsigned int);
 #define FAST_IRQ_NAME(nr) IRQ_NAME2(fast_IRQ##nr)
 #define BAD_IRQ_NAME(nr) IRQ_NAME2(bad_IRQ##nr)
 
+/*
+ * 三个函数fast_irq_interrupt, irq_interrupt, 
+ * bad_irq_interrupt对中断有不同的响应方式
+
+ * 对于irq_interrupt, 首先将全部上下文入栈，这里构造出的栈帧结构
+ * 和system_call、trap等的堆栈结构是一样的。
+ * 接下来的事情是给外设发送ACK信号，表示中断接收完成。然后再构造do_IRQ的的堆栈帧，
+ * 跳到irq.c中的C函数中处理
+ 
+ * 对于fast_irq_interrupt, 保存的寄存器组要少一些，并且不允许中断嵌套
+ 
+ * 对于bad_irq_interrupt, 回复完硬件中断直接返回，不做任何处理。
+ */
 #define BUILD_IRQ(chip,nr,mask) \
 asmlinkage void IRQ_NAME(nr); \
 asmlinkage void FAST_IRQ_NAME(nr); \
@@ -133,8 +146,13 @@ __asm__( \
 	"pushl $-"#nr"-2\n\t" \
 	SAVE_ALL \
 	ACK_##chip(mask) \
+/* intr_count是用来记录中断的嵌套层数的 */
 	"incl _intr_count\n\t"\
+	/* 对于所有的中断门，切换到中断处理程序时，CPU是默认清IF位的，
+	 * 所以所有中断处理程序，在保存完上下文之后做的第一件事就应该是
+	 * 开中断, 这样可以允许中断嵌套 */
 	"sti\n\t" \
+	/* 构造的栈顶为irq_number, 上下文地址 */
 	"movl %esp,%ebx\n\t" \
 	"pushl %ebx\n\t" \
 	"pushl $" #nr "\n\t" \
@@ -143,6 +161,7 @@ __asm__( \
 	"cli\n\t" \
 	UNBLK_##chip(mask) \
 	"decl _intr_count\n\t" \
+	/* 在中断结束后跳到ret_from_sys_call去处理 */
 	"jmp ret_from_sys_call\n" \
 "\n.align 4\n" \
 "_fast_IRQ" #nr "_interrupt:\n\t" \

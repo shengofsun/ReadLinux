@@ -146,21 +146,35 @@ void vfree(void * addr)
 	printk("Trying to vfree() nonexistent vm area (%p)\n", addr);
 }
 
+/*
+ * vmalloc
+ * 从内核地址空间high_memory开始的地方，虚地址空间和物理内存不是一对一映射的。而是
+ * 将物理内存页动态填充的。所有的虚地址空间按区间串成一个链表vmlist, 每一个链表项就是
+ * vm_struct. 
+
+ * 这部分地址空间用户内核内存整页整页的大块动态分配
+ */
 void * vmalloc(unsigned long size)
 {
 	void * addr;
 	struct vm_struct **p, *tmp, *area;
 
+	/* 按页分配 */
 	size = PAGE_ALIGN(size);
 	if (!size || size > high_memory)
 		return NULL;
+	/* 先用kmalloc分配一个vm_struct结构体 */
 	area = (struct vm_struct *) kmalloc(sizeof(*area), GFP_KERNEL);
 	if (!area)
 		return NULL;
 	addr = (void *) ((high_memory + VMALLOC_OFFSET) & ~(VMALLOC_OFFSET-1));
+
+	/* 这里的本意是每分配的一个area都和下一个area有大小为一页的槽，
+	   所以每个area的size都增加了PAGE_SIZE */
 	area->size = size + PAGE_SIZE;
 	area->next = NULL;
 	for (p = &vmlist; (tmp = *p) ; p = &tmp->next) {
+		/* 但这里又用原来的size，我觉得这样的代码实现有问题，应该用area->size的 */
 		if (size + (unsigned long) addr < (unsigned long) tmp->addr)
 			break;
 		addr = (void *) (tmp->size + (unsigned long) tmp->addr);

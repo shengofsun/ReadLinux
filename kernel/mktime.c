@@ -43,6 +43,7 @@ long kernel_mktime(struct mktime * time)
 	long res;
 	int year;
 
+	/* 时间减的是70, 不处理21世纪的时间 */
 	year = time->year - 70;
 /* magic offsets (y+1) needed to get leapyears right.*/
 	res = YEAR*year + DAY*((year+1)/4);

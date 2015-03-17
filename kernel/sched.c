@@ -224,6 +224,8 @@ asmlinkage void schedule(void)
 	sti();
 	need_resched = 0;
 	p = &init_task;
+
+	/* 先遍历所有的进程 */
 	for (;;) {
 		if ((p = p->next_task) == &init_task)
 			goto confuse_gcc1;
@@ -272,11 +274,14 @@ confuse_gcc1:
 	for (;;) {
 		if ((p = p->next_task) == &init_task)
 			goto confuse_gcc2;
+		/* 调度是的时候选择counter最大的 */
 		if (p->state == TASK_RUNNING && p->counter > c)
 			c = p->counter, next = p;
 	}
 confuse_gcc2:
 	if (!c) {
+		/* counter在修正的时候要参考priority, priority越大则counter越大
+		 * 所以如果c为0，则选择有最高优先级的进程运行 */
 		for_each_task(p)
 			p->counter = (p->counter >> 1) + p->priority;
 	}
@@ -284,6 +289,7 @@ confuse_gcc2:
 		kstat.context_swtch++;
 	switch_to(next);
 	/* Now maybe reload the debug registers */
+	/* 任何一个进程，在schedule回来后，会按着原来的堆栈帧继续内核态的处理 */
 	if(current->debugreg[7]){
 		loaddebug(0);
 		loaddebug(1);

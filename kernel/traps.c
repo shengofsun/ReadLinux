@@ -28,13 +28,18 @@ static inline void console_verbose(void)
 	console_loglevel = 15;
 }
 
+/* 错误的处理方式:
+   把trap_no和error_code记录到对应的task_struct中。
+   注意这里用的是传入的tsk，而不是current。因为协处理器错误不一定是current导致的。*/
 #define DO_ERROR(trapnr, signr, str, name, tsk) \
 asmlinkage void do_##name(struct pt_regs * regs, long error_code) \
 { \
 	tsk->tss.error_code = error_code; \
 	tsk->tss.trap_no = trapnr; \
+	/* 这里的if判断只有SIGTRAP能用的到，所以这里的处理函数应该可以做一定的优化的。*/
 	if (signr == SIGTRAP && current->flags & PF_PTRACED) \
 		current->blocked &= ~(1 << (SIGTRAP-1)); \
+    /* 会根据不同的硬件中断，给进程发送对应的信号 */
 	send_sig(signr, tsk, 1); \
 	die_if_kernel(str,regs,error_code); \
 }
@@ -85,7 +90,11 @@ asmlinkage void alignment_check(void);
 
 	esp = (unsigned long) &regs->esp;
 	ss = KERNEL_DS;
-	if ((regs->eflags & VM_MASK) || (3 & regs->cs) == 3)
+	/* 如果是用户进程发生错误，则发了信号就什么都不管了。
+	   这事儿就看进程的信号怎么处理了
+	   而对于内核态的进程错误，则将进程杀死。
+	*/
+	if ((regs->eflags & VM_MASK) || (3 & regs->cs) == 3) 
 		return;
 	if (regs->cs & 3) {
 		esp = regs->esp;

@@ -3,6 +3,18 @@
 
 #include <linux/segment.h>
 
+/*
+ * 1. iret返回的堆栈结构: 
+ *    |- target ss     -|
+ *    |- target esp    -|
+ *    |- target eflags -|
+ *    |- target cs     -|
+ *    |- target eip    -|
+ *    可以看出，返回到user-mode后，0号进程的ss是USER_DS, 
+ *    esp就是在move_to_user_mode宏调用之前的esp, eflags不变，cs是USER_CS, eip用pushl $1f保存
+ * 2. ds, es, fs, gs全部用USER_DS
+ * 3. 可以这么做的一个重要先决条件：从0~3G的地址空间已经做了映射。事实上只有0~4M做了映射，在head.s中。
+ */
 #define move_to_user_mode() \
 __asm__ __volatile__ ("movl %%esp,%%eax\n\t" \
 	"pushl %0\n\t" \
@@ -88,7 +100,7 @@ __asm__ __volatile__ ("movw %%dx,%%ax\n\t" \
 	_set_gate(&idt[n],15,3,addr)
 
 /*
- * 调用门的类型为12, 设置特权级别为3，起始地址为addr，门描述符的位置为a。
+ * 调用门的类型为12, 设置dpl级别为3，起始地址为addr，门描述符的位置为a。
  */
 #define set_call_gate(a,addr) \
 	_set_gate(a,12,3,addr)

@@ -543,11 +543,12 @@ int shm_fork (struct task_struct *p1, struct task_struct *p2)
 	struct shmid_ds *shp;
 	int id;
 
-        if (!p1->shm)
+	if (!p1->shm)
 		return 0;
 	for (shmd = p1->shm; shmd; shmd = shmd->task_next) {
 		tmp = (struct shm_desc *) kmalloc(sizeof(*tmp), GFP_KERNEL);
 		if (!tmp) {
+			/* 一旦又一个shm_desc分配不到，就必须回滚，将所有已经分配的desc释放掉 */
 			while (new_desc) { 
 				tmp = new_desc->task_next; 
 				kfree_s (new_desc, sizeof (*new_desc)); 

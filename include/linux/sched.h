@@ -193,6 +193,7 @@ struct task_struct {
 	 * older sibling, respectively.  (p->father can be replaced with 
 	 * p->p_pptr->pid)
 	 */
+	/* 通过这些结构体可以将进程的结构树构建出来 */
 	struct task_struct *p_opptr,*p_pptr, *p_cptr, *p_ysptr, *p_osptr;
 	struct wait_queue *wait_chldexit;	/* for wait4() */
 	/*
@@ -370,6 +371,18 @@ __asm__("cmpl %%ecx,_current\n\t" \
 	"clts\n" \
 	"1:" \
 	: /* no output */ \
+     // (*(&tsk->tss.tr-4))是ljmp指令的操作数
+	 // 其中，*表示操作数是内存操作数，内存地址是tsk->tss.tr的内存地址再减去4
+     // 因为ljmp的操作数是32位offset+16位选择子，所以这样的内存操作数使得选择子为
+     // tsk->tss.tr,正好指向task在gdt中的描述符，二32位的offset在task switch中是
+     // 没有意义的
+     /* 需要关注的问题是ljmp完成后，指令会跳转到什么地方
+	  * 我们知道，发生task switch后，目的eip是在tss中指定的。对于已经运行过的进程，
+	  * eip的值其实就是ljmp后面的那条sti, 这是在task_switch时由CPU保存的。
+	  * 对于新创建的进程，eip的值是sys_fork中设置的，是ret_from_sys_call开始的那段
+	  * 从中断返回的汇编代码。而新进程的内核栈帧结构都是在sys_fork中设置好的。*/
+
+     /* 另一个值得注意的是ecx的值，当进程上台时，ecx表示先运行进程的进程结构体 */
 	:"m" (*(((char *)&tsk->tss.tr)-4)), \
 	 "c" (tsk) \
 	:"cx")

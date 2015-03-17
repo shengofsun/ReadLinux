@@ -247,6 +247,10 @@ v86_signal_return:
 	popl %ebx
 	RESTORE_ALL
 
+/* 在traps.c中，trap_init将0~17号中断的入口函数设置为从此处开始的汇编代码。
+ * 对于没有error_code的中断入口函数，会push一个0，和有error_code的保持兼容
+ * 然后把真正的处理函数入栈，这是一个Ｃ语言的函数。实现在traps.c中
+ * 通过宏DO_ERROR来实现　*/
 .align 4
 _divide_error:
 	pushl $0		# no error code
@@ -267,16 +271,30 @@ error_code:
 	movl %eax,%db7			# disable hardware debugging...
 	cld
 	movl $-1, %eax
+	/* ORIG_EAX在堆栈中的位置，正好是error_code所在的位置，可以参见ptrace.h中的结构体
+	 * pt_regs */
 	xchgl %eax, ORIG_EAX(%esp)	# orig_eax (get the error code. )
 	xorl %ebx,%ebx			# zero ebx
 	mov %gs,%bx			# get the lower order bits of gs
+
+	/* 在GS(%esp)的位置，存放的实际上是那段C函数的地址　
+	 * 这里把入口地址放入ebx中，并且保存gs地址 */
 	xchgl %ebx, GS(%esp)		# get the address and save gs.
+
+	/* 下面的三条指令，为Ｃ语言的函数建立了堆栈帧，do_xxx的形参列表为
+	 * (struct pt_regs *regs, long error_code)
+	 * 所以代码先把error_code压入栈中，又把上下文结构体pt_regs的地址压入栈中(lea+push) */
 	pushl %eax			# push the error code
 	lea 4(%esp),%edx
 	pushl %edx
+
+	/* 切换ds, es到内核段 */
 	movl $(KERNEL_DS),%edx
 	mov %dx,%ds
 	mov %dx,%es
+
+	/* 这里可以看到Linux的一个特性。在内核态的时候，fs是指向进程的用户态地址空间的。
+	   这个在后期版本的Linux中仍旧存在 */
 	movl $(USER_DS),%edx
 	mov %dx,%fs
 	pushl %eax
@@ -284,8 +302,12 @@ error_code:
 	movl %db6,%edx
 	movl %edx,dbgreg6(%eax)  # save current hardware debugging status
 	popl %eax
+
+	/* 调用C语言的函数了，就是traps.c中的那个DO_ERROR宏展开的东西 */
 	call *%ebx
+	/* 把自己创建的堆栈帧销毁了 */
 	addl $8,%esp
+	/* 当前栈顶的内容就是pt_regs这个上下文 */
 	jmp ret_from_sys_call
 
 .align 4
