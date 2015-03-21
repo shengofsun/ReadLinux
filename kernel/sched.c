@@ -218,6 +218,8 @@ asmlinkage void schedule(void)
 /* check alarm, wake up any interruptible tasks that have got a signal */
 
 	cli();
+	/* itimer_ticks用来记录进程自上台以来所经历过的时钟中断数
+	 * 每次在重新调度的时候要清零 */
 	ticks = itimer_ticks;
 	itimer_ticks = 0;
 	itimer_next = ~0;
@@ -231,6 +233,8 @@ asmlinkage void schedule(void)
 			goto confuse_gcc1;
 		if (ticks && p->it_real_value) {
 			if (p->it_real_value <= ticks) {
+				/* 可以看到alarm的定时功能是用it_real_value
+				 * 实现的 */
 				send_sig(SIGALRM, p, 1);
 				if (!p->it_real_incr) {
 					p->it_real_value = 0;
@@ -241,6 +245,10 @@ asmlinkage void schedule(void)
 				} while (p->it_real_value <= ticks);
 			}
 			p->it_real_value -= ticks;
+			/* itimer_next记录距离下次定时器的中断数，
+			 * 注意这里是在遍历所有进程后，选择最早到时的进程alarm定时器
+			 * 因为itimer_next是用来协助做进程调度的：当一个进程到时，就希望它可以被调度上台
+			 * 可以参见do_timer代码中利用itimer_ticks和itimer_next的调度设置 */
 			if (p->it_real_value < itimer_next)
 				itimer_next = p->it_real_value;
 		}
@@ -421,6 +429,10 @@ void add_timer(struct timer_list * timer)
 	p = &next_timer;
 	save_flags(flags);
 	cli();
+
+	/* 把timer插到定时器链表next_timer的适当位置中去。
+	 * 注意timer->expires是到下一个定时器的相对时间长度
+	 * 所以在遍历链表的时候会有相减的代码 */
 	while (*p) {
 		if ((*p)->expires > timer->expires) {
 			(*p)->expires -= timer->expires;
@@ -447,6 +459,8 @@ int del_timer(struct timer_list * timer)
 		if (*p == timer) {
 			if ((*p = timer->next) != NULL)
 				(*p)->expires += timer->expires;
+			/* 函数结束后，timer->expires记录了
+			 * 定时器还有多久到时 */
 			timer->expires += expires;
 			restore_flags(flags);
 			return 1;
@@ -574,6 +588,7 @@ static void timer_bh(void * unused)
 	unsigned long mask;
 	struct timer_struct *tp;
 
+	/* 定时器一共有两种，一种用链表的，一种用数组的 */
 	cli();
 	while (next_timer && next_timer->expires == 0) {
 		void (*fn)(unsigned long) = next_timer->function;
@@ -590,6 +605,8 @@ static void timer_bh(void * unused)
 			break;
 		if (!(mask & timer_active))
 			continue;
+		/* time_struct下的expires含义和timer_list下expires的含义
+		 * 又不同，这里要注意 */
 		if (tp->expires > jiffies)
 			continue;
 		timer_active &= ~mask;
@@ -657,6 +674,7 @@ static void do_timer(struct pt_regs * regs)
 	    second_overflow();
 	}
 
+	/* 每次tick都把jiffies增加1 */
 	jiffies++;
 	calc_load();
 	if ((VM_MASK & regs->eflags) || (3 & regs->cs)) {
@@ -675,7 +693,7 @@ static void do_timer(struct pt_regs * regs)
 	} else {
 		current->stime++;
 		if(current != task[0])
-			kstat.cpu_system++;
+			kstat.cpu_system++; /* kstat.cpu_system用来统计内核占据的总时间 */
 #ifdef CONFIG_PROFILE
 		if (prof_buffer && current != task[0]) {
 			unsigned long eip = regs->eip;
@@ -686,6 +704,7 @@ static void do_timer(struct pt_regs * regs)
 #endif
 	}
 	if (current == task[0] || (--current->counter)<=0) {
+		/* 每次进程的counter减到0就是重新调度的时机 */
 		current->counter=0;
 		need_resched = 1;
 	}
@@ -694,8 +713,9 @@ static void do_timer(struct pt_regs * regs)
 		current->it_prof_value = current->it_prof_incr;
 		send_sig(SIGPROF,current,1);
 	}
+	/* 处理时钟定时器 */
 	for (mask = 1, tp = timer_table+0 ; mask ; tp++,mask += mask) {
-		if (mask > timer_active)
+		if (mask > timer_active) /* 对timer_active mask位的一点优化 */
 			break;
 		if (!(mask & timer_active))
 			continue;
@@ -704,6 +724,9 @@ static void do_timer(struct pt_regs * regs)
 		mark_bh(TIMER_BH);
 	}
 	cli();
+
+	/* itimer_ticks在每次中断的时候自增，当自增到满足某个进程的定时器到时后，
+	 * 就希望做进程的重新调度 */
 	itimer_ticks++;
 	if (itimer_ticks > itimer_next)
 		need_resched = 1;
@@ -721,7 +744,7 @@ static void do_timer(struct pt_regs * regs)
 }
 
 asmlinkage int sys_alarm(long seconds)
-{
+{/* alarm是用ITIMER_REAL实现的 */
 	struct itimerval it_new, it_old;
 
 	it_new.it_interval.tv_sec = it_new.it_interval.tv_usec = 0;

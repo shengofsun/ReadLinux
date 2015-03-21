@@ -26,6 +26,10 @@
  *
  * POSIX.1 2.4: an empty pathname is invalid (ENOENT).
  */
+/*
+ * 把数据从用户态拷到内核态虽然增加了时间，但是使得内核对用户态不再有数据耦合。
+ * 这样，用户进程在睡眠的时候，内存页可以自由的换到交换分区。
+ */
 int getname(const char * filename, char **result)
 {
 	int error;
@@ -35,12 +39,15 @@ int getname(const char * filename, char **result)
 	i = (unsigned long) filename;
 	if (!i || i >= TASK_SIZE)
 		return -EFAULT;
+	/* 用TASK_SIZE减地址算是对filename长度的一个估算，反正最多只拷贝1页。
+	 * 这里i的值不会影响下面的while循环 */
 	i = TASK_SIZE - i;
 	error = -EFAULT;
 	if (i > PAGE_SIZE) {
 		i = PAGE_SIZE;
 		error = -ENAMETOOLONG;
 	}
+	/* fs的作用在这里体现了出来，可以方便的访问用户态的数据 */
 	c = get_fs_byte(filename++);
 	if (!c)
 		return -ENOENT;
@@ -91,6 +98,7 @@ int permission(struct inode * inode,int mask)
  * routines (currently minix_lookup) for it. It also checks for
  * fathers (pseudo-roots, mount-points)
  */
+/* 在目录dir中寻找文件名为name的inode，inode长度为len，结果inode放到result中 */
 int lookup(struct inode * dir,const char * name, int len,
 	struct inode ** result)
 {
@@ -107,6 +115,8 @@ int lookup(struct inode * dir,const char * name, int len,
 			*result = dir;
 			return 0;
 		} else if ((sb = dir->i_sb) && (dir == sb->s_mounted)) {
+			/* 如果当前目录是某个挂载点的根目录, 
+			   则返回到挂载点的上一层 */
 			sb = dir->i_sb;
 			iput(dir);
 			dir = sb->s_covered;
@@ -152,6 +162,16 @@ int follow_link(struct inode * dir, struct inode * inode,
  *
  * dir_namei() returns the inode of the directory of the
  * specified name, and the name within that directory.
+ */
+/*
+ * 输入参数: 
+ * 1. pathname, 打开的文件路径名
+ * 2. base, 路径迭代的起点，NULL表示从当前目录开始
+
+ * 输出参数
+ * 1. namelen, 文件名的长度
+ * 2. name, 文件名
+ * 3. res_inode, 文件所属路径的inode节点
  */
 static int dir_namei(const char * pathname, int * namelen, const char ** name,
 	struct inode * base, struct inode ** res_inode)
@@ -281,6 +301,9 @@ int open_namei(const char * pathname, int flag, int mode,
 
 	mode &= S_IALLUGO & ~current->umask;
 	mode |= S_IFREG;
+
+	/*basename存放文件名，namelen存放文件名长度，dir存放文件名所在目录
+	 *的inode节点*/
 	error = dir_namei(pathname,&namelen,&basename,base,&dir);
 	if (error)
 		return error;
@@ -350,7 +373,7 @@ int open_namei(const char * pathname, int flag, int mode,
 	}
  	if ((inode->i_count > 1) && (flag & 2)) {
  		for (p = &LAST_TASK ; p > &FIRST_TASK ; --p) {
-		        struct vm_area_struct * mpnt;
+			struct vm_area_struct * mpnt;
  			if (!*p)
  				continue;
  			if (inode == (*p)->executable) {
@@ -372,8 +395,8 @@ int open_namei(const char * pathname, int flag, int mode,
 	      if (inode->i_op && inode->i_op->truncate)
 	           inode->i_op->truncate(inode);
 	      if ((error = notify_change(NOTIFY_SIZE, inode))) {
-		   iput(inode);
-		   return error;
+			  iput(inode);
+			  return error;
 	      }
 	      inode->i_dirt = 1;
 	}

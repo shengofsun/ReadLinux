@@ -157,6 +157,9 @@ handle_bottom_half:
 	jmp 9f
 .align 4
 reschedule:
+	/* 将ret_from_sys_call入栈，保证了
+	 * schedule回来后，继续从ret_from_sys_call执行，
+	 * 因为schedule函数返回后，ret指令继续从栈顶取eip执行 */
 	pushl $ret_from_sys_call
 	jmp _schedule
 .align 4
@@ -219,6 +222,7 @@ ret_from_sys_call:
 	jne reschedule
 	cmpl $0,counter(%eax)		# counter
 	je reschedule
+	/* 如果有没有被屏蔽掉的信号产生，就进行处理 */
 	movl blocked(%eax),%ecx
 	movl %ecx,%ebx			# save blocked in %ebx for signal handling
 	notl %ecx
@@ -250,7 +254,7 @@ v86_signal_return:
 /* 在traps.c中，trap_init将0~17号中断的入口函数设置为从此处开始的汇编代码。
  * 对于没有error_code的中断入口函数，会push一个0，和有error_code的保持兼容
  * 然后把真正的处理函数入栈，这是一个Ｃ语言的函数。实现在traps.c中
- * 通过宏DO_ERROR来实现　*/
+* 通过宏DO_ERROR来实现　*/
 .align 4
 _divide_error:
 	pushl $0		# no error code
@@ -272,7 +276,8 @@ error_code:
 	cld
 	movl $-1, %eax
 	/* ORIG_EAX在堆栈中的位置，正好是error_code所在的位置，可以参见ptrace.h中的结构体
-	 * pt_regs */
+	* pt_regs */
+	/* 这句执行完之后，ORIG_EAX的值变成了-1 */	
 	xchgl %eax, ORIG_EAX(%esp)	# orig_eax (get the error code. )
 	xorl %ebx,%ebx			# zero ebx
 	mov %gs,%bx			# get the lower order bits of gs

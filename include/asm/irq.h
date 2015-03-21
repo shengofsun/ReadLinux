@@ -143,6 +143,7 @@ asmlinkage void BAD_IRQ_NAME(nr); \
 __asm__( \
 "\n.align 4\n" \
 "_IRQ" #nr "_interrupt:\n\t" \
+/* 注意这里的ORIG_EAX的值为-nr-2 */
 	"pushl $-"#nr"-2\n\t" \
 	SAVE_ALL \
 	ACK_##chip(mask) \

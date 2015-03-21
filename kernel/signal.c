@@ -310,7 +310,10 @@ static void setup_frame(struct sigaction * sa, unsigned long ** fp, unsigned lon
  * stack-frames in one go after that.
  */
 asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
-{
+{/* 信号的处理逻辑可以参考APUE第十章信号，这里的很多代码以及exit.c中有关send_signal和
+  * generate函数都是按照POSIX实现的。包括SIG_DFL, SIG_IGN, SIG_ERR为0,-1,1也是标准规定的
+  * do_signal的这种实现其实是很糟糕的。大量的分支判断，使得逻辑并不清晰。这种实现方式并不推荐
+  */
 	unsigned long mask = ~current->blocked;
 	unsigned long handler_signal = 0;
 	unsigned long *frame = NULL;
@@ -326,6 +329,8 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 		sa = current->sigaction + signr;
 		signr++;
 		if ((current->flags & PF_PTRACED) && signr != SIGKILL) {
+			/* 如果子进程正在被调试，那么出了SIGKILL外，其他信号都会被传递
+			 * 给父进程 */
 			current->exit_code = signr;
 			current->state = TASK_STOPPED;
 			notify_parent(current);
@@ -345,6 +350,8 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 			if (signr != SIGCHLD)
 				continue;
 			/* check for SIGCHLD: it's special */
+			/* 如果对于SIGCHID设置了SIG_IGN, 则子进程自动退出，
+			   而不会扰动到父进程。也没有僵尸进程产生 */
 			while (sys_waitpid(-1,NULL,WNOHANG) > 0)
 				/* nothing */;
 			continue;
@@ -380,11 +387,24 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 		/*
 		 * OK, we're invoking a handler
 		 */
+		/* 
+		 * orig_eax的值是中断、异常的入口函数保存的，其值需要讨论一下
+		 * 对于int80代表的系统调用，在陷入内核态后是系统调用号，一个非负值。
+		 * sys_call.S/_system_call在入口处，把该值保存为orig_eax,
+
+		 * 对于处理器错误和异常，是trap模块处理的，该模块的入口函数也在sys_call.S中。真正保护上下文
+		 * 现场的是error_code处的函数，该部分代码会把orig_eax设置为-1
+
+		 * 对于intr引脚接入的外设中断，处理模块是irq。入口函数在irq.h/BUILD_IRQ中，xxx_interrupt的入口
+		 * 代码把orig_eax设置为了-nr-2, 反正是一个小于-1的负数
+		 */
 		if (regs->orig_eax >= 0) {
+			/* 系统调用被信号打断了，并且信号设置为不重启系统调用，就返回-EINTR */
 			if (regs->eax == -ERESTARTNOHAND ||
 			   (regs->eax == -ERESTARTSYS && !(sa->sa_flags & SA_RESTART)))
 				regs->eax = -EINTR;
 		}
+		/* 标记一下哪个信号的处理函数需要调用 */
 		handler_signal |= 1 << (signr-1);
 		mask &= ~sa->sa_mask;
 	}
@@ -392,12 +412,16 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 	    (regs->eax == -ERESTARTNOHAND ||
 	     regs->eax == -ERESTARTSYS ||
 	     regs->eax == -ERESTARTNOINTR)) {
+		/* 重启系统调用的方式，重传系统调用号，eip减两个字节
+		 * 为什么是减2个字节。因为int 80这条指令是2字节 */
 		regs->eax = regs->orig_eax;
 		regs->eip -= 2;
 	}
 	if (!handler_signal)		/* no handler will be called - return 0 */
 		return 0;
+	
 	eip = regs->eip;
+	/* frame指向了用户栈的栈顶 */
 	frame = (unsigned long *) regs->esp;
 	signr = 1;
 	sa = current->sigaction;
@@ -411,6 +435,7 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 		if (sa->sa_flags & SA_ONESHOT)
 			sa->sa_handler = NULL;
 /* force a supervisor-mode page-in of the signal handler to reduce races */
+		/* 可能跟缺页异常的处理有关系 */
 		__asm__("testb $0,%%fs:%0": :"m" (*(char *) eip));
 		regs->cs = USER_CS; regs->ss = USER_DS;
 		regs->ds = USER_DS; regs->es = USER_DS;
