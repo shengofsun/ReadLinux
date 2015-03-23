@@ -216,6 +216,7 @@ asmlinkage int sys_waitpid(pid_t pid,unsigned long * stat_addr, int options);
  */
 asmlinkage int sys_sigreturn(unsigned long __unused)
 {
+	/* 信号处理完成后会返回到内核的这一部分，因为是系统调用，所以__unused就是pt_regs */
 #define COPY(x) regs->x = context.x
 #define COPY_SEG(x) \
 if ((context.x & 0xfffc) && (context.x & 3) != 3) goto badframe; COPY(x);
@@ -227,6 +228,7 @@ if (!(context.x & 0xfffc) || (context.x & 3) != 3) goto badframe; COPY(x);
 	regs = (struct pt_regs *) &__unused;
 	if (verify_area(VERIFY_READ, (void *) regs->esp, sizeof(context)))
 		goto badframe;
+	/* 把用户栈保存的原上下文拷贝过来，准备再次返回 */
 	memcpy_fromfs(&context,(void *) regs->esp, sizeof(context));
 	current->blocked = context.oldmask & _BLOCKABLE;
 	COPY_SEG(ds);
@@ -266,8 +268,14 @@ static void setup_frame(struct sigaction * sa, unsigned long ** fp, unsigned lon
 	if (verify_area(VERIFY_WRITE,frame,32*4))
 		do_exit(SIGSEGV);
 /* set up the "normal" stack seen by the signal handler (iBCS2) */
+	/* 这就是新构造的堆栈帧结构 */
+	/* 函数调用结束的返回值，handler结束后，ret指令的源操作数，可以看到返回值就是当前栈帧的栈顶+24
+	 * 在frame+24的地方，内核插入了一段代码 */
 	put_fs_long(__CODE,frame);
+	/* 这是形参，因为信号处理函数的申明体是void handler(int signo) */
 	put_fs_long(signr, frame+1);
+
+	/* 这里是sigcontext_struct, 给sys_sigreturn用的*/
 	put_fs_long(regs->gs, frame+2);
 	put_fs_long(regs->fs, frame+3);
 	put_fs_long(regs->es, frame+4);
@@ -292,6 +300,12 @@ static void setup_frame(struct sigaction * sa, unsigned long ** fp, unsigned lon
 	put_fs_long(oldmask, frame+22);
 	put_fs_long(current->tss.cr2, frame+23);
 /* set up the return code... */
+	/* handler结束后的ret指令就返回到这里，三条指令的机器码：
+	 * popl %eax -----将栈顶的signr弹出去
+	 * movl *(%eip), %eax ----- 把__NR_sigreturn赋值给%eax
+	 * int 0x80 ---- 系统调用, 调到上面的函数sys_sigreturn中去
+
+	 * 这样的实现，真的很屌 */
 	put_fs_long(0x0000b858, CODE(0));	/* popl %eax ; movl $,%eax */
 	put_fs_long(0x80cd0000, CODE(4));	/* int $0x80 */
 	put_fs_long(__NR_sigreturn, CODE(2));
@@ -314,6 +328,7 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
   * generate函数都是按照POSIX实现的。包括SIG_DFL, SIG_IGN, SIG_ERR为0,-1,1也是标准规定的
   * do_signal的这种实现其实是很糟糕的。大量的分支判断，使得逻辑并不清晰。这种实现方式并不推荐
   */
+	/* mask表示当前未被block的信号 */
 	unsigned long mask = ~current->blocked;
 	unsigned long handler_signal = 0;
 	unsigned long *frame = NULL;
@@ -419,17 +434,29 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 	}
 	if (!handler_signal)		/* no handler will be called - return 0 */
 		return 0;
-	
+
+	/* 这里的内容是Linux信号处理upcall机制的核心，概括来说过程如下：
+	 * 1. 在从内核返回的时候篡改上下文的栈顶内容和eip，使得返回到信号处理函数中。
+	 * 2. 插入一小段代码到用户态空间中，使得信号处理函数执行完后再次通过int 80陷入到内核态
+	 * 3. 在内核态再次做返回，如果还有信号处理函数需要执行则继续，没有则返回到原来的地方去 */
 	eip = regs->eip;
-	/* frame指向了用户栈的栈顶 */
 	frame = (unsigned long *) regs->esp;
 	signr = 1;
 	sa = current->sigaction;
+	/* 篡改堆栈的过程是这样的：在当前的用户态栈顶之上创建一个新的堆栈帧；
+	 * 如果还有信号处理函数，继续朝上创建新的堆栈帧 */
+	/* 注意一下eip和frame的初始值，然后再注意下在for循环迭代的时候eip和frame不断的修改
+	 * 这段代码的实现还是比较漂亮的 */
+
+	/* 从这样的处理来看，信号来的先后是没有排队的，而且blocked字段根据sa->sa_mask的设置并不合理。
+	 * 如果有多个信号产生并同时处理，block的效果是各个处理过程的并集 
+	 * 所以这段代码对于upcall机制很有参考意义，但已经和现在的POSIX标准想去甚远了 */
 	for (mask = 1 ; mask ; sa++,signr++,mask += mask) {
 		if (mask > handler_signal)
 			break;
 		if (!(mask & handler_signal))
 			continue;
+		/* 在用户态建立一个堆栈帧 */
 		setup_frame(sa,&frame,eip,regs,signr,oldmask);
 		eip = (unsigned long) sa->sa_handler;
 		if (sa->sa_flags & SA_ONESHOT)
