@@ -140,6 +140,9 @@ int lookup(struct inode * dir,const char * name, int len,
 	return dir->i_op->lookup(dir,name,len,result);
 }
 
+/* follow_link的作用
+ * 给定目录和符号链接的inode节点，找到真正的node节点
+ */
 int follow_link(struct inode * dir, struct inode * inode,
 	int flag, int mode, struct inode ** res_inode)
 {
@@ -172,6 +175,8 @@ int follow_link(struct inode * dir, struct inode * inode,
  * 1. namelen, 文件名的长度
  * 2. name, 文件名
  * 3. res_inode, 文件所属路径的inode节点
+
+ * 在用dir_namei打开目录后，
  */
 static int dir_namei(const char * pathname, int * namelen, const char ** name,
 	struct inode * base, struct inode ** res_inode)
@@ -198,6 +203,7 @@ static int dir_namei(const char * pathname, int * namelen, const char ** name,
 			/* nothing */ ;
 		if (!c)
 			break;
+		/* 在每次lookup之前都要将base的引用计数加1 */
 		base->i_count++;
 		error = lookup(base,thisname,len,&inode);
 		if (error) {
@@ -309,6 +315,7 @@ int open_namei(const char * pathname, int flag, int mode,
 		return error;
 	if (!namelen) {			/* special case: '/usr/' etc */
 		if (flag & 2) {
+			/* 用open打开目录只能读不能写 */
 			iput(dir);
 			return -EISDIR;
 		}
@@ -323,6 +330,7 @@ int open_namei(const char * pathname, int flag, int mode,
 	dir->i_count++;		/* lookup eats the dir */
 	if (flag & O_CREAT) {
 		down(&dir->i_sem);
+		/* lookup的作用：给定目录的inode和名字，返回节点的inode */
 		error = lookup(dir,basename,namelen,&inode);
 		if (!error) {
 			if (flag & O_EXCL) {
@@ -377,6 +385,7 @@ int open_namei(const char * pathname, int flag, int mode,
  			if (!*p)
  				continue;
  			if (inode == (*p)->executable) {
+				/* 如果要打开的inode是某个进程的执行图像，则返回打开失败 */
  				iput(inode);
  				return -ETXTBSY;
  			}
@@ -384,6 +393,8 @@ int open_namei(const char * pathname, int flag, int mode,
 				if (mpnt->vm_page_prot & PAGE_RW)
 					continue;
 				if (inode == mpnt->vm_inode) {
+					/* 如果进程想以可写的模式打开只读mmap到某个进程的文件，则返回失败
+					 * 因为这相当于修改别人进程的地址空间 */
 					iput(inode);
 					return -ETXTBSY;
 				}
@@ -394,6 +405,7 @@ int open_namei(const char * pathname, int flag, int mode,
 	      inode->i_size = 0;
 	      if (inode->i_op && inode->i_op->truncate)
 	           inode->i_op->truncate(inode);
+		  /* 对于带了truncate flag的open，等于在open的时候就修改了inode */
 	      if ((error = notify_change(NOTIFY_SIZE, inode))) {
 			  iput(inode);
 			  return error;
