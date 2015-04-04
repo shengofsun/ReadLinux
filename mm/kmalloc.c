@@ -15,7 +15,7 @@
 
 /* I want this low enough for a while to catch errors.
    I want this number to be increased in the near future:
-        loadable device drivers should use this function to get memory */
+   loadable device drivers should use this function to get memory */
 
 #define MAX_KMALLOC_K 4
 
@@ -26,10 +26,9 @@
 
 
 /* Private flags. */
-
+/* 这里的两个FLAGS定义的很有意思，感觉是为了容错性而采用的奇怪变量 */
 #define MF_USED 0xffaa0055
 #define MF_FREE 0x0055ffaa
-
 
 /* 
  * Much care has gone into making these routines in this file reentrant.
@@ -104,8 +103,23 @@ struct size_descriptor sizes[] = {
 
 #define NBLOCKS(order)          (sizes[order].nblocks)
 #define BLOCKSIZE(order)        (sizes[order].size)
+<<<<<<< HEAD
  
 
+=======
+
+/** 
+ * 零碎内存的管理方法:
+ * 1. 操作系统内核只能分配几种固定字节的内存，种类数在size_descriptor数组sizes中描述
+ * 2. 内存结构：
+ * (1) size-desc.firstfree: 指向由空闲的内存页组成的链表，page_descriptor.next是链表的下一项
+ * (2) 对于每个物理内存页，最开始就是一个page_descriptor, 后面的内容是一个个供分配用的内存块mem_block.
+ * page_descriptor.firstfree是空闲mem_block的头指针，每个mem_block的block_header.vp.fbh_next将这串
+ * 成又一个链表
+ * (3)每个mem_block由两部分组成: block_header+memory, block_header用来记录内存信息，
+ * 后面的memory分配出去供内核的其他模块使用
+ */
+>>>>>>> c470ce184a757e89df9747f3947c4e21f255bc81
 
 long kmalloc_init (long start_mem,long end_mem)
 {
@@ -115,20 +129,20 @@ long kmalloc_init (long start_mem,long end_mem)
  * Check the static info array. Things will blow up terribly if it's
  * incorrect. This is a late "compile time" check.....
  */
-for (order = 0;BLOCKSIZE(order);order++)
+	for (order = 0;BLOCKSIZE(order);order++)
     {
-    if ((NBLOCKS (order)*BLOCKSIZE(order) + sizeof (struct page_descriptor)) >
-        PAGE_SIZE) 
+		if ((NBLOCKS (order)*BLOCKSIZE(order) + sizeof (struct page_descriptor)) >
+			PAGE_SIZE) 
         {
-        printk ("Cannot use %d bytes out of %d in order = %d block mallocs\n",
-                NBLOCKS (order) * BLOCKSIZE(order) + 
-                        sizeof (struct page_descriptor),
-                (int) PAGE_SIZE,
-                BLOCKSIZE (order));
-        panic ("This only happens if someone messes with kmalloc");
+			printk ("Cannot use %d bytes out of %d in order = %d block mallocs\n",
+					NBLOCKS (order) * BLOCKSIZE(order) + 
+					sizeof (struct page_descriptor),
+					(int) PAGE_SIZE,
+					BLOCKSIZE (order));
+			panic ("This only happens if someone messes with kmalloc");
         }
     }
-return start_mem;
+	return start_mem;
 }
 
 
@@ -145,200 +159,200 @@ int get_order (int size)
 	return -1;
 }
 
-void * kmalloc (size_t size, int priority)
+void* kmalloc (size_t size, int priority)
 {
 	unsigned long flags;
 	int order,tries,i,sz;
 	struct block_header *p;
 	struct page_descriptor *page;
 	extern unsigned long intr_count;
-
+	
 /* Sanity check... */
 	if (intr_count && priority != GFP_ATOMIC) {
 		printk("kmalloc called nonatomically from interrupt %08lx\n",
-			((unsigned long *)&size)[-1]);
+			   ((unsigned long *)&size)[-1]);
 		priority = GFP_ATOMIC;
 	}
-if (size > MAX_KMALLOC_K * 1024) 
-     {
-     printk ("kmalloc: I refuse to allocate %d bytes (for now max = %d).\n",
+	if (size > MAX_KMALLOC_K * 1024) 
+	{
+		printk ("kmalloc: I refuse to allocate %d bytes (for now max = %d).\n",
                 size,MAX_KMALLOC_K*1024);
-     return (NULL);
-     }
+		return (NULL);
+	}
 
-order = get_order (size);
-if (order < 0)
+	order = get_order (size);
+	if (order < 0)
     {
-    printk ("kmalloc of too large a block (%d bytes).\n",size);
-    return (NULL);
+		printk ("kmalloc of too large a block (%d bytes).\n",size);
+		return (NULL);
     }
 
-save_flags(flags);
+	save_flags(flags);
 
 /* It seems VERY unlikely to me that it would be possible that this 
    loop will get executed more than once. */
-tries = MAX_GET_FREE_PAGE_TRIES; 
-while (tries --)
+	tries = MAX_GET_FREE_PAGE_TRIES; 
+	while (tries --)
     {
-    /* Try to allocate a "recently" freed memory block */
-    cli ();
-    if ((page = sizes[order].firstfree) &&
-        (p    =  page->firstfree))
+		/* Try to allocate a "recently" freed memory block */
+		cli ();
+		if ((page = sizes[order].firstfree) &&
+			(p    =  page->firstfree))
         {
-        if (p->bh_flags == MF_FREE)
+			if (p->bh_flags == MF_FREE)
             {
-            page->firstfree = p->bh_next;
-            page->nfree--;
-            if (!page->nfree)
+				page->firstfree = p->bh_next;
+				page->nfree--;
+				if (!page->nfree)
                 {
-                sizes[order].firstfree = page->next;
-                page->next = NULL;
+					sizes[order].firstfree = page->next;
+					page->next = NULL;
                 }
-            restore_flags(flags);
+				restore_flags(flags);
 
-            sizes [order].nmallocs++;
-            sizes [order].nbytesmalloced += size;
-            p->bh_flags =  MF_USED; /* As of now this block is officially in use */
-            p->bh_length = size;
-            return p+1; /* Pointer arithmetic: increments past header */
+				sizes [order].nmallocs++;
+				sizes [order].nbytesmalloced += size;
+				p->bh_flags =  MF_USED; /* As of now this block is officially in use */
+				p->bh_length = size;
+				return p+1; /* Pointer arithmetic: increments past header */
             }
-        printk ("Problem: block on freelist at %08lx isn't free.\n",(long)p);
-        return (NULL);
+			printk ("Problem: block on freelist at %08lx isn't free.\n",(long)p);
+			return (NULL);
         }
-    restore_flags(flags);
+		restore_flags(flags);
 
 
-    /* Now we're in trouble: We need to get a new free page..... */
+		/* Now we're in trouble: We need to get a new free page..... */
 
-    sz = BLOCKSIZE(order); /* sz is the size of the blocks we're dealing with */
+		sz = BLOCKSIZE(order); /* sz is the size of the blocks we're dealing with */
 
-    /* This can be done with ints on: This is private to this invocation */
-    page = (struct page_descriptor *) __get_free_page (priority & GFP_LEVEL_MASK);
-    if (!page) 
+		/* This can be done with ints on: This is private to this invocation */
+		page = (struct page_descriptor *) __get_free_page (priority & GFP_LEVEL_MASK);
+		if (!page) 
         {
-        printk ("Couldn't get a free page.....\n");
-        return NULL;
+			printk ("Couldn't get a free page.....\n");
+			return NULL;
         }
 #if 0
-    printk ("Got page %08x to use for %d byte mallocs....",(long)page,sz);
+		printk ("Got page %08x to use for %d byte mallocs....",(long)page,sz);
 #endif
-    sizes[order].npages++;
+		sizes[order].npages++;
 
-    /* Loop for all but last block: */
-    for (i=NBLOCKS(order),p=BH (page+1);i > 1;i--,p=p->bh_next) 
+		/* Loop for all but last block: */
+		for (i=NBLOCKS(order),p=BH (page+1);i > 1;i--,p=p->bh_next) 
         {
-        p->bh_flags = MF_FREE;
-        p->bh_next = BH ( ((long)p)+sz);
+			p->bh_flags = MF_FREE;
+			p->bh_next = BH ( ((long)p)+sz);
         }
-    /* Last block: */
-    p->bh_flags = MF_FREE;
-    p->bh_next = NULL;
+		/* Last block: */
+		p->bh_flags = MF_FREE;
+		p->bh_next = NULL;
 
-    page->order = order;
-    page->nfree = NBLOCKS(order); 
-    page->firstfree = BH(page+1);
+		page->order = order;
+		page->nfree = NBLOCKS(order); 
+		page->firstfree = BH(page+1);
 #if 0
-    printk ("%d blocks per page\n",page->nfree);
+		printk ("%d blocks per page\n",page->nfree);
 #endif
-    /* Now we're going to muck with the "global" freelist for this size:
-       this should be uniterruptible */
-    cli ();
-    /* 
-     * sizes[order].firstfree used to be NULL, otherwise we wouldn't be
-     * here, but you never know.... 
-     */
-    page->next = sizes[order].firstfree;
-    sizes[order].firstfree = page;
-    restore_flags(flags);
+		/* Now we're going to muck with the "global" freelist for this size:
+		   this should be uniterruptible */
+		cli ();
+		/* 
+		 * sizes[order].firstfree used to be NULL, otherwise we wouldn't be
+		 * here, but you never know.... 
+		 */
+		page->next = sizes[order].firstfree;
+		sizes[order].firstfree = page;
+		restore_flags(flags);
     }
 
 /* Pray that printk won't cause this to happen again :-) */
 
-printk ("Hey. This is very funny. I tried %d times to allocate a whole\n"
-        "new page for an object only %d bytes long, but some other process\n"
-        "beat me to actually allocating it. Also note that this 'error'\n"
-        "message is soooo very long to catch your attention. I'd appreciate\n"
-        "it if you'd be so kind as to report what conditions caused this to\n"
-        "the author of this kmalloc: wolff@dutecai.et.tudelft.nl.\n"
-        "(Executive summary: This can't happen)\n", 
-                MAX_GET_FREE_PAGE_TRIES,
-                size);
-return NULL;
+	printk ("Hey. This is very funny. I tried %d times to allocate a whole\n"
+			"new page for an object only %d bytes long, but some other process\n"
+			"beat me to actually allocating it. Also note that this 'error'\n"
+			"message is soooo very long to catch your attention. I'd appreciate\n"
+			"it if you'd be so kind as to report what conditions caused this to\n"
+			"the author of this kmalloc: wolff@dutecai.et.tudelft.nl.\n"
+			"(Executive summary: This can't happen)\n", 
+			MAX_GET_FREE_PAGE_TRIES,
+			size);
+	return NULL;
 }
 
 
 void kfree_s (void *ptr,int size)
 {
-unsigned long flags;
-int order;
-register struct block_header *p=((struct block_header *)ptr) -1;
-struct page_descriptor *page,*pg2;
+	unsigned long flags;
+	int order;
+	register struct block_header *p=((struct block_header *)ptr) -1;
+	struct page_descriptor *page,*pg2;
 
-page = PAGE_DESC (p);
-order = page->order;
-if ((order < 0) || 
-    (order > sizeof (sizes)/sizeof (sizes[0])) ||
-    (((long)(page->next)) & ~PAGE_MASK) ||
-    (p->bh_flags != MF_USED))
+	page = PAGE_DESC (p);
+	order = page->order;
+	if ((order < 0) || 
+		(order > sizeof (sizes)/sizeof (sizes[0])) ||
+		(((long)(page->next)) & ~PAGE_MASK) ||
+		(p->bh_flags != MF_USED))
     {
-    printk ("kfree of non-kmalloced memory: %p, next= %p, order=%d\n",
+		printk ("kfree of non-kmalloced memory: %p, next= %p, order=%d\n",
                 p, page->next, page->order);
-    return;
+		return;
     }
-if (size &&
-    size != p->bh_length)
+	if (size &&
+		size != p->bh_length)
     {
-    printk ("Trying to free pointer at %p with wrong size: %d instead of %lu.\n",
-        p,size,p->bh_length);
-    return;
+		printk ("Trying to free pointer at %p with wrong size: %d instead of %lu.\n",
+				p,size,p->bh_length);
+		return;
     }
-size = p->bh_length;
-p->bh_flags = MF_FREE; /* As of now this block is officially free */
+	size = p->bh_length;
+	p->bh_flags = MF_FREE; /* As of now this block is officially free */
 
-save_flags(flags);
-cli ();
-p->bh_next = page->firstfree;
-page->firstfree = p;
-page->nfree ++;
+	save_flags(flags);
+	cli ();
+	p->bh_next = page->firstfree;
+	page->firstfree = p;
+	page->nfree ++;
 
-if (page->nfree == 1)
-   { /* Page went from full to one free block: put it on the freelist */
-   if (page->next)
+	if (page->nfree == 1)
+	{ /* Page went from full to one free block: put it on the freelist */
+		if (page->next)
         {
-        printk ("Page %p already on freelist dazed and confused....\n", page);
+			printk ("Page %p already on freelist dazed and confused....\n", page);
         }
-   else
+		else
         {
-        page->next = sizes[order].firstfree;
-        sizes[order].firstfree = page;
+			page->next = sizes[order].firstfree;
+			sizes[order].firstfree = page;
         }
-   }
+	}
 
 /* If page is completely free, free it */
-if (page->nfree == NBLOCKS (page->order))
+	if (page->nfree == NBLOCKS (page->order))
     {
 #if 0
-    printk ("Freeing page %08x.\n", (long)page);
+		printk ("Freeing page %08x.\n", (long)page);
 #endif
-    if (sizes[order].firstfree == page)
+		if (sizes[order].firstfree == page)
         {
-        sizes[order].firstfree = page->next;
+			sizes[order].firstfree = page->next;
         }
-    else
+		else
         {
-        for (pg2=sizes[order].firstfree;
-                (pg2 != NULL) && (pg2->next != page);
-                        pg2=pg2->next)
-            /* Nothing */;
-        if (pg2 != NULL)
-            pg2->next = page->next;
-        else
-            printk ("Ooops. page %p doesn't show on freelist.\n", page);
+			for (pg2=sizes[order].firstfree;
+				 (pg2 != NULL) && (pg2->next != page);
+				 pg2=pg2->next)
+				/* Nothing */;
+			if (pg2 != NULL)
+				pg2->next = page->next;
+			else
+				printk ("Ooops. page %p doesn't show on freelist.\n", page);
         }
-    free_page ((long)page);
+		free_page ((long)page);
     }
-restore_flags(flags);
+	restore_flags(flags);
 
-sizes[order].nfrees++;      /* Noncritical (monitoring) admin stuff */
-sizes[order].nbytesmalloced -= size;
+	sizes[order].nfrees++;      /* Noncritical (monitoring) admin stuff */
+	sizes[order].nbytesmalloced -= size;
 }

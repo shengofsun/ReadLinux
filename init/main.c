@@ -224,17 +224,18 @@ int checksetup(char *line)
 }
 
 unsigned long loops_per_sec = 1;
-
+/* 这个蛋疼的函数，是为了获得一个较精确的loops_per_sec的值。
+   利用这个值，__delay函数执行这么多次后，时间为1秒。*/
 static void calibrate_delay(void)
 {
 	int ticks;
 
 	printk("Calibrating delay loop.. ");
-	while (loops_per_sec <<= 1) {
+	while (loops_per_sec <<= 1) { /* 每次以乘2的方式增加loops_per_sec */
 		ticks = jiffies;
-		__delay(loops_per_sec);
-		ticks = jiffies - ticks;
-		if (ticks >= HZ) {
+		__delay(loops_per_sec); /* 空转这么多次，每次空转执行一次自减指令 */
+		ticks = jiffies - ticks; /* 经历的ticks个数 */
+		if (ticks >= HZ) { /* 至于为什么要等到空转数大于1秒，大概是为了精确 */
 			__asm__("mull %1 ; divl %2"
 				:"=a" (loops_per_sec)
 				:"d" (HZ),
@@ -410,8 +411,14 @@ asmlinkage void start_kernel(void)
 #endif
     /* kmalloc_init只做一些初始化的检查,位于kmalloc.c */
 	memory_start = kmalloc_init(memory_start,memory_end);
+<<<<<<< HEAD
     
+=======
+    /* 初始化字符设备：tty, console, 键盘，鼠标，串口，打印机等。
+       设置好结构体对应的操作，初始化中断响应函数 */
+>>>>>>> c470ce184a757e89df9747f3947c4e21f255bc81
 	memory_start = chr_dev_init(memory_start,memory_end);
+    /* 块设备，各种硬盘，文件ll_rw_blk.c。值得注意的是，ramdisk在这里初始化 */
 	memory_start = blk_dev_init(memory_start,memory_end);
 	sti();
 	calibrate_delay();
@@ -423,6 +430,7 @@ asmlinkage void start_kernel(void)
 #endif
 	memory_start = inode_init(memory_start,memory_end);
 	memory_start = file_table_init(memory_start,memory_end);
+	/* 1. 为每个内存页指定一个map项 2. 将空闲内存页串成链表 */
 	mem_init(low_memory_start,memory_start,memory_end);
 	buffer_init();
 	time_init();
@@ -470,7 +478,11 @@ asmlinkage void start_kernel(void)
 	system_utsname.machine[1] = '0' + x86;
 	printk(linux_banner);
 
+	/* 先切换到ring3, 再调用fork和init */
 	move_to_user_mode();
+
+	/* fork的符号，是main.c文件前面，宏syscall0实现的
+	 * 该实现最终会用int80调用sys_fork，所以这个函数本质是在用户态调用了sys_fork */
 	if (!fork())		/* we count on this going ok */
 		init();
 /*

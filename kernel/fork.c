@@ -67,6 +67,10 @@ repeat:
 	return free_task;
 }
 
+/* 这段代码有太多的不理解
+ * 1. file_struct在拷贝内容的时候为什么可以用memcpy, 结构中可是有指向链表指针f_next和f_prev的
+ * 2. 在打开失败后直接将new_file置为NULL而不去释放又是什么意思，
+ *    new_file的在链表中的结构已经被前面的memcpy给破坏了 */
 static struct file * copy_fd(struct file * old_file)
 {
 	struct file * new_file = get_empty_filp();
@@ -95,6 +99,7 @@ int dup_mmap(struct task_struct * tsk)
 
 	tsk->mmap = NULL;
 	tsk->stk_vma = NULL;
+	/* 链表拷贝 */
 	p = &tsk->mmap;
 	for (mpnt = current->mmap ; mpnt ; mpnt = mpnt->vm_next) {
 		tmp = (struct vm_area_struct *) kmalloc(sizeof(struct vm_area_struct), GFP_KERNEL);
@@ -105,6 +110,7 @@ int dup_mmap(struct task_struct * tsk)
 		tmp->vm_next = NULL;
 		if (tmp->vm_inode)
 			tmp->vm_inode->i_count++;
+		/* 写的还是蛮简洁的，永远指向链表最后一个 */
 		*p = tmp;
 		p = &tmp->vm_next;
 		if (current->stk_vma == mpnt)
@@ -135,7 +141,7 @@ asmlinkage int sys_fork(struct pt_regs regs)
 	if (nr < 0)
 		goto bad_fork_free;
 	task[nr] = p;
-	*p = *current;
+	*p = *current; 	/* 这样的编码习惯很值得推荐，一开始先拷贝所有结构，然后根据需要修改 */
 	p->did_exec = 0;
 	p->kernel_stack_page = 0;
 	p->state = TASK_UNINTERRUPTIBLE;
@@ -144,6 +150,7 @@ asmlinkage int sys_fork(struct pt_regs regs)
 	p->swappable = 1;
 	p->p_pptr = p->p_opptr = current;
 	p->p_cptr = NULL;
+	/* 构建进程的结构树 */
 	SET_LINKS(p);
 	p->signal = 0;
 	p->it_real_value = p->it_virt_value = p->it_prof_value = 0;
@@ -157,29 +164,39 @@ asmlinkage int sys_fork(struct pt_regs regs)
 /*
  * set up new TSS and kernel stack
  */
-	if (!(p->kernel_stack_page = __get_free_page(GFP_KERNEL)))
+	/* 接下来的代码对创建新进程至关重要 */
+	if (!(p->kernel_stack_page = __get_free_page(GFP_KERNEL))) //分配一页内存作为内核栈
 		goto bad_fork_cleanup;
-	p->tss.es = KERNEL_DS;
+	/* 设置tss的段选择子，使得进程切换到内核态后能有正确的值 */
+	p->tss.es = KERNEL_DS; 
 	p->tss.cs = KERNEL_CS;
 	p->tss.ss = KERNEL_DS;
 	p->tss.ds = KERNEL_DS;
 	p->tss.fs = USER_DS;
 	p->tss.gs = KERNEL_DS;
 	p->tss.ss0 = KERNEL_DS;
-	p->tss.esp0 = p->kernel_stack_page + PAGE_SIZE;
+	/* 这一句指定了进程切换到内核态所用的内核栈 */
+	p->tss.esp0 = p->kernel_stack_page + PAGE_SIZE; 
 	p->tss.tr = _TSS(nr);
+
+	/* 在内核栈中构造一帧pt_regs, 构造子进程也是从中断返回的假象 */
 	childregs = ((struct pt_regs *) (p->kernel_stack_page + PAGE_SIZE)) - 1;
+
+	/* 这两句描述了子进程在内核态的栈顶位置和eip位置，当子进程调度上台后，就会从这里执行 */
 	p->tss.esp = (unsigned long) childregs;
 	p->tss.eip = (unsigned long) ret_from_sys_call;
 	*childregs = regs;
+	/* 子进程返回0 */
 	childregs->eax = 0;
 	p->tss.back_link = 0;
 	p->tss.eflags = regs.eflags & 0xffffcfff;	/* iopl is always 0 for a new process */
 	if (IS_CLONE) {
-		if (regs.ebx)
+		/* CLONE可能共享地址空间 */
+		if (regs.ebx) /* 如果用户在调用CLONE的时候指定了子进程的栈底，则按用户设置来 */
 			childregs->esp = regs.ebx;
 		clone_flags = regs.ecx;
-		if (childregs->esp == regs.esp)
+		/* 如果上一个if没有生效，说明用户没有指定子进程的栈，则新开辟地址空间 */
+		if (childregs->esp == regs.esp) 
 			clone_flags |= COPYVM;
 	}
 	p->exit_signal = clone_flags & CSIGNAL;
@@ -195,13 +212,15 @@ asmlinkage int sys_fork(struct pt_regs regs)
 	if (last_task_used_math == current)
 		__asm__("clts ; fnsave %0 ; frstor %0":"=m" (p->tss.i387));
 	p->semun = NULL; p->shm = NULL;
+	/* coyp_vm成功返回0。这里表示如果页表拷贝失败，后面的事情就不干了 */
 	if (copy_vm(p) || shm_fork(current, p))
 		goto bad_fork_cleanup;
 	if (clone_flags & COPYFD) {
 		for (i=0; i<NR_OPEN;i++)
 			if ((f = p->filp[i]) != NULL)
 				p->filp[i] = copy_fd(f);
-	} else {
+	} else { /* 如果不是COYPFD, 则父子进程共享file_struct, 注意最开始的
+			  *p = *current已经拷贝了filp数组的信息 */
 		for (i=0; i<NR_OPEN;i++)
 			if ((f = p->filp[i]) != NULL)
 				f->f_count++;
@@ -219,8 +238,10 @@ asmlinkage int sys_fork(struct pt_regs regs)
 	else
 		set_ldt_desc(gdt+(nr<<1)+FIRST_LDT_ENTRY,&default_ldt, 1);
 
+	/* counter从除以2开始算起 */
 	p->counter = current->counter >> 1;
 	p->state = TASK_RUNNING;	/* do this last, just in case */
+	/* 父进程返回子进程ID */
 	return p->pid;
 bad_fork_cleanup:
 	task[nr] = NULL;

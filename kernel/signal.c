@@ -216,6 +216,7 @@ asmlinkage int sys_waitpid(pid_t pid,unsigned long * stat_addr, int options);
  */
 asmlinkage int sys_sigreturn(unsigned long __unused)
 {
+	/* 信号处理完成后会返回到内核的这一部分，因为是系统调用，所以__unused就是pt_regs */
 #define COPY(x) regs->x = context.x
 #define COPY_SEG(x) \
 if ((context.x & 0xfffc) && (context.x & 3) != 3) goto badframe; COPY(x);
@@ -227,6 +228,7 @@ if (!(context.x & 0xfffc) || (context.x & 3) != 3) goto badframe; COPY(x);
 	regs = (struct pt_regs *) &__unused;
 	if (verify_area(VERIFY_READ, (void *) regs->esp, sizeof(context)))
 		goto badframe;
+	/* 把用户栈保存的原上下文拷贝过来，准备再次返回 */
 	memcpy_fromfs(&context,(void *) regs->esp, sizeof(context));
 	current->blocked = context.oldmask & _BLOCKABLE;
 	COPY_SEG(ds);
@@ -266,8 +268,14 @@ static void setup_frame(struct sigaction * sa, unsigned long ** fp, unsigned lon
 	if (verify_area(VERIFY_WRITE,frame,32*4))
 		do_exit(SIGSEGV);
 /* set up the "normal" stack seen by the signal handler (iBCS2) */
+	/* 这就是新构造的堆栈帧结构 */
+	/* 函数调用结束的返回值，handler结束后，ret指令的源操作数，可以看到返回值就是当前栈帧的栈顶+24
+	 * 在frame+24的地方，内核插入了一段代码 */
 	put_fs_long(__CODE,frame);
+	/* 这是形参，因为信号处理函数的申明体是void handler(int signo) */
 	put_fs_long(signr, frame+1);
+
+	/* 这里是sigcontext_struct, 给sys_sigreturn用的*/
 	put_fs_long(regs->gs, frame+2);
 	put_fs_long(regs->fs, frame+3);
 	put_fs_long(regs->es, frame+4);
@@ -292,6 +300,12 @@ static void setup_frame(struct sigaction * sa, unsigned long ** fp, unsigned lon
 	put_fs_long(oldmask, frame+22);
 	put_fs_long(current->tss.cr2, frame+23);
 /* set up the return code... */
+	/* handler结束后的ret指令就返回到这里，三条指令的机器码：
+	 * popl %eax -----将栈顶的signr弹出去
+	 * movl *(%eip), %eax ----- 把__NR_sigreturn赋值给%eax
+	 * int 0x80 ---- 系统调用, 调到上面的函数sys_sigreturn中去
+
+	 * 这样的实现，真的很屌 */
 	put_fs_long(0x0000b858, CODE(0));	/* popl %eax ; movl $,%eax */
 	put_fs_long(0x80cd0000, CODE(4));	/* int $0x80 */
 	put_fs_long(__NR_sigreturn, CODE(2));
@@ -310,7 +324,11 @@ static void setup_frame(struct sigaction * sa, unsigned long ** fp, unsigned lon
  * stack-frames in one go after that.
  */
 asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
-{
+{/* 信号的处理逻辑可以参考APUE第十章信号，这里的很多代码以及exit.c中有关send_signal和
+  * generate函数都是按照POSIX实现的。包括SIG_DFL, SIG_IGN, SIG_ERR为0,-1,1也是标准规定的
+  * do_signal的这种实现其实是很糟糕的。大量的分支判断，使得逻辑并不清晰。这种实现方式并不推荐
+  */
+	/* mask表示当前未被block的信号 */
 	unsigned long mask = ~current->blocked;
 	unsigned long handler_signal = 0;
 	unsigned long *frame = NULL;
@@ -326,6 +344,8 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 		sa = current->sigaction + signr;
 		signr++;
 		if ((current->flags & PF_PTRACED) && signr != SIGKILL) {
+			/* 如果子进程正在被调试，那么出了SIGKILL外，其他信号都会被传递
+			 * 给父进程 */
 			current->exit_code = signr;
 			current->state = TASK_STOPPED;
 			notify_parent(current);
@@ -345,6 +365,8 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 			if (signr != SIGCHLD)
 				continue;
 			/* check for SIGCHLD: it's special */
+			/* 如果对于SIGCHID设置了SIG_IGN, 则子进程自动退出，
+			   而不会扰动到父进程。也没有僵尸进程产生 */
 			while (sys_waitpid(-1,NULL,WNOHANG) > 0)
 				/* nothing */;
 			continue;
@@ -380,11 +402,24 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 		/*
 		 * OK, we're invoking a handler
 		 */
+		/* 
+		 * orig_eax的值是中断、异常的入口函数保存的，其值需要讨论一下
+		 * 对于int80代表的系统调用，在陷入内核态后是系统调用号，一个非负值。
+		 * sys_call.S/_system_call在入口处，把该值保存为orig_eax,
+
+		 * 对于处理器错误和异常，是trap模块处理的，该模块的入口函数也在sys_call.S中。真正保护上下文
+		 * 现场的是error_code处的函数，该部分代码会把orig_eax设置为-1
+
+		 * 对于intr引脚接入的外设中断，处理模块是irq。入口函数在irq.h/BUILD_IRQ中，xxx_interrupt的入口
+		 * 代码把orig_eax设置为了-nr-2, 反正是一个小于-1的负数
+		 */
 		if (regs->orig_eax >= 0) {
+			/* 系统调用被信号打断了，并且信号设置为不重启系统调用，就返回-EINTR */
 			if (regs->eax == -ERESTARTNOHAND ||
 			   (regs->eax == -ERESTARTSYS && !(sa->sa_flags & SA_RESTART)))
 				regs->eax = -EINTR;
 		}
+		/* 标记一下哪个信号的处理函数需要调用 */
 		handler_signal |= 1 << (signr-1);
 		mask &= ~sa->sa_mask;
 	}
@@ -392,25 +427,42 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 	    (regs->eax == -ERESTARTNOHAND ||
 	     regs->eax == -ERESTARTSYS ||
 	     regs->eax == -ERESTARTNOINTR)) {
+		/* 重启系统调用的方式，重传系统调用号，eip减两个字节
+		 * 为什么是减2个字节。因为int 80这条指令是2字节 */
 		regs->eax = regs->orig_eax;
 		regs->eip -= 2;
 	}
 	if (!handler_signal)		/* no handler will be called - return 0 */
 		return 0;
+
+	/* 这里的内容是Linux信号处理upcall机制的核心，概括来说过程如下：
+	 * 1. 在从内核返回的时候篡改上下文的栈顶内容和eip，使得返回到信号处理函数中。
+	 * 2. 插入一小段代码到用户态空间中，使得信号处理函数执行完后再次通过int 80陷入到内核态
+	 * 3. 在内核态再次做返回，如果还有信号处理函数需要执行则继续，没有则返回到原来的地方去 */
 	eip = regs->eip;
 	frame = (unsigned long *) regs->esp;
 	signr = 1;
 	sa = current->sigaction;
+	/* 篡改堆栈的过程是这样的：在当前的用户态栈顶之上创建一个新的堆栈帧；
+	 * 如果还有信号处理函数，继续朝上创建新的堆栈帧 */
+	/* 注意一下eip和frame的初始值，然后再注意下在for循环迭代的时候eip和frame不断的修改
+	 * 这段代码的实现还是比较漂亮的 */
+
+	/* 从这样的处理来看，信号来的先后是没有排队的，而且blocked字段根据sa->sa_mask的设置并不合理。
+	 * 如果有多个信号产生并同时处理，block的效果是各个处理过程的并集 
+	 * 所以这段代码对于upcall机制很有参考意义，但已经和现在的POSIX标准想去甚远了 */
 	for (mask = 1 ; mask ; sa++,signr++,mask += mask) {
 		if (mask > handler_signal)
 			break;
 		if (!(mask & handler_signal))
 			continue;
+		/* 在用户态建立一个堆栈帧 */
 		setup_frame(sa,&frame,eip,regs,signr,oldmask);
 		eip = (unsigned long) sa->sa_handler;
 		if (sa->sa_flags & SA_ONESHOT)
 			sa->sa_handler = NULL;
 /* force a supervisor-mode page-in of the signal handler to reduce races */
+		/* 可能跟缺页异常的处理有关系 */
 		__asm__("testb $0,%%fs:%0": :"m" (*(char *) eip));
 		regs->cs = USER_CS; regs->ss = USER_DS;
 		regs->ds = USER_DS; regs->es = USER_DS;

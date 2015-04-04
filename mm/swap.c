@@ -133,6 +133,7 @@ unsigned long swap_duplicate(unsigned long entry)
 
 	if (!entry)
 		return 0;
+	/* 交换分区页表项的信息:12~31位表示交换分区索引；1~11位表示type；0位为present位 */
 	offset = SWP_OFFSET(entry);
 	type = SWP_TYPE(entry);
 	if (type == SHM_SWP_TYPE)
@@ -314,91 +315,91 @@ static int swap_out(unsigned int priority)
 
     counter = NR_TASKS * 2 >> priority;
     for(; counter >= 0; counter--, swap_task++) {
-	/*
-	 * Check that swap_task is suitable for swapping.  If not, look for
-	 * the next suitable process.
-	 */
-	loop = 0;
-	while(1) {
-	    if(swap_task >= NR_TASKS) {
-		swap_task = 1;
-		if(loop)
-		    /* all processes are unswappable or already swapped out */
-		    return 0;
-		loop = 1;
-	    }
+		/*
+		 * Check that swap_task is suitable for swapping.  If not, look for
+		 * the next suitable process.
+		 */
+		loop = 0;
+		while(1) {
+			if(swap_task >= NR_TASKS) {
+				swap_task = 1;
+				if(loop)
+					/* all processes are unswappable or already swapped out */
+					return 0;
+				loop = 1;
+			}
 
-	    p = task[swap_task];
-	    if(p && p->swappable && p->rss)
-		break;
+			p = task[swap_task];
+			if(p && p->swappable && p->rss)
+				break;
 
-	    swap_task++;
-	}
-
-	/*
-	 * Determine the number of pages to swap from this process.
-	 */
-	if(! p -> swap_cnt) {
-	    p->dec_flt = (p->dec_flt * 3) / 4 + p->maj_flt - p->old_maj_flt;
-	    p->old_maj_flt = p->maj_flt;
-
-	    if(p->dec_flt >= SWAP_RATIO / SWAP_MIN) {
-		p->dec_flt = SWAP_RATIO / SWAP_MIN;
-		p->swap_cnt = SWAP_MIN;
-	    } else if(p->dec_flt <= SWAP_RATIO / SWAP_MAX)
-		p->swap_cnt = SWAP_MAX;
-	    else
-		p->swap_cnt = SWAP_RATIO / p->dec_flt;
-	}
-
-	/*
-	 * Go through process' page directory.
-	 */
-	for(table = p->swap_table; table < 1024; table++) {
-	    pg_table = ((unsigned long *) p->tss.cr3)[table];
-	    if(pg_table >= high_memory)
-		    continue;
-	    if(mem_map[MAP_NR(pg_table)] & MAP_PAGE_RESERVED)
-		    continue;
-	    if(!(PAGE_PRESENT & pg_table)) {
-		    printk("swap_out: bad page-table at pg_dir[%d]: %08lx\n",
-			    table, pg_table);
-		    ((unsigned long *) p->tss.cr3)[table] = 0;
-		    continue;
-	    }
-	    pg_table &= 0xfffff000;
-
-	    /*
-	     * Go through this page table.
-	     */
-	    for(page = p->swap_page; page < 1024; page++) {
-		switch(try_to_swap_out(page + (unsigned long *) pg_table)) {
-		    case 0:
-			break;
-
-		    case 1:
-			p->rss--;
-			/* continue with the following page the next time */
-			p->swap_table = table;
-			p->swap_page  = page + 1;
-			if((--p->swap_cnt) == 0)
-			    swap_task++;
-			return 1;
-
-		    default:
-			p->rss--;
-			break;
+			swap_task++;
 		}
-	    }
 
-	    p->swap_page = 0;
-	}
+		/*
+		 * Determine the number of pages to swap from this process.
+		 */
+		if(! p -> swap_cnt) {
+			p->dec_flt = (p->dec_flt * 3) / 4 + p->maj_flt - p->old_maj_flt;
+			p->old_maj_flt = p->maj_flt;
 
-	/*
-	 * Finish work with this process, if we reached the end of the page
-	 * directory.  Mark restart from the beginning the next time.
-	 */
-	p->swap_table = 0;
+			if(p->dec_flt >= SWAP_RATIO / SWAP_MIN) {
+				p->dec_flt = SWAP_RATIO / SWAP_MIN;
+				p->swap_cnt = SWAP_MIN;
+			} else if(p->dec_flt <= SWAP_RATIO / SWAP_MAX)
+				p->swap_cnt = SWAP_MAX;
+			else
+				p->swap_cnt = SWAP_RATIO / p->dec_flt;
+		}
+
+		/*
+		 * Go through process' page directory.
+		 */
+		for(table = p->swap_table; table < 1024; table++) {
+			pg_table = ((unsigned long *) p->tss.cr3)[table];
+			if(pg_table >= high_memory)
+				continue;
+			if(mem_map[MAP_NR(pg_table)] & MAP_PAGE_RESERVED)
+				continue;
+			if(!(PAGE_PRESENT & pg_table)) {
+				printk("swap_out: bad page-table at pg_dir[%d]: %08lx\n",
+					   table, pg_table);
+				((unsigned long *) p->tss.cr3)[table] = 0;
+				continue;
+			}
+			pg_table &= 0xfffff000;
+
+			/*
+			 * Go through this page table.
+			 */
+			for(page = p->swap_page; page < 1024; page++) {
+				switch(try_to_swap_out(page + (unsigned long *) pg_table)) {
+				case 0:
+					break;
+
+				case 1:
+					p->rss--;
+					/* continue with the following page the next time */
+					p->swap_table = table;
+					p->swap_page  = page + 1;
+					if((--p->swap_cnt) == 0)
+						swap_task++;
+					return 1;
+
+				default:
+					p->rss--;
+					break;
+				}
+			}
+
+			p->swap_page = 0;
+		}
+
+		/*
+		 * Finish work with this process, if we reached the end of the page
+		 * directory.  Mark restart from the beginning the next time.
+		 */
+		p->swap_table = 0;
     }
     return 0;
 }
@@ -448,7 +449,7 @@ check_dir:
 	}
 	if (!(PAGE_PRESENT & pg_table)) {
 		printk("bad page-table at pg_dir[%d]: %08x\n",
-			swap_table,pg_table);
+			   swap_table,pg_table);
 		((unsigned long *) p->tss.cr3)[swap_table] = 0;
 		swap_table++;
 		goto check_dir;
@@ -461,9 +462,9 @@ check_table:
 		goto check_dir;
 	}
 	switch (try_to_swap_out(swap_page + (unsigned long *) pg_table)) {
-		case 0: break;
-		case 1: p->rss--; return 1;
-		default: p->rss--;
+	case 0: break;
+	case 1: p->rss--; return 1;
+	default: p->rss--;
 	}
 	swap_page++;
 	goto check_table;
@@ -550,28 +551,36 @@ void free_page(unsigned long addr)
  * will make *no* jumps for the normal code. Don't touch unless you
  * know what you are doing.
  */
-#define REMOVE_FROM_MEM_QUEUE(queue,nr) \
-	cli(); \
-	if ((result = queue) != 0) { \
-		if (!(result & ~PAGE_MASK) && result < high_memory) { \
-			queue = *(unsigned long *) result; \
-			if (!mem_map[MAP_NR(result)]) { \
-				mem_map[MAP_NR(result)] = 1; \
-				nr--; \
-last_free_pages[index = (index + 1) & (NR_LAST_FREE_PAGES - 1)] = result; \
-				restore_flags(flag); \
-				return result; \
-			} \
-			printk("Free page %08lx has mem_map = %d\n", \
-				result,mem_map[MAP_NR(result)]); \
-		} else \
+/*
+ * 从链表头部取一个内存页，返回，并记录到循环队列last_free_pages中
+
+ * 值得注意的几点：
+ * (1) 中断的处理方法。先用cli确保关掉中断，因为这段代码有queue, index两个变量需要做临界区保护。
+ * 所以必须先关中断。最后用restore_flags的方式恢复eflags位，保证回到原来的状态。
+ * (2) if的条件判断比较值得学习，把经常执行的代码放到if-case中，使得处理器的分支预测能够更好执行。
+ */
+#define REMOVE_FROM_MEM_QUEUE(queue,nr)									\
+	cli();																\
+	if ((result = queue) != 0) {										\
+		if (!(result & ~PAGE_MASK) && result < high_memory) {			\
+			queue = *(unsigned long *) result;							\
+			if (!mem_map[MAP_NR(result)]) {								\
+				mem_map[MAP_NR(result)] = 1;							\
+				nr--;													\
+				last_free_pages[index = (index + 1) & (NR_LAST_FREE_PAGES - 1)] = result; \
+				restore_flags(flag);									\
+				return result;											\
+			}															\
+			printk("Free page %08lx has mem_map = %d\n",				\
+				   result,mem_map[MAP_NR(result)]);						\
+		} else															\
 			printk("Result = 0x%08lx - memory map destroyed\n", result); \
-		queue = 0; \
-		nr = 0; \
-	} else if (nr) { \
-		printk(#nr " is %d, but " #queue " is empty\n",nr); \
-		nr = 0; \
-	} \
+		queue = 0;														\
+		nr = 0;															\
+	} else if (nr) {													\
+		printk(#nr " is %d, but " #queue " is empty\n",nr);				\
+		nr = 0;															\
+	}																	\
 	restore_flags(flag)
 
 /*
@@ -589,19 +598,25 @@ unsigned long __get_free_page(int priority)
 	unsigned long result, flag;
 	static unsigned long index = 0;
 
-	/* this routine can be called at interrupt time via
-	   malloc.  We want to make sure that the critical
-	   sections of code have interrupts disabled. -RAB
-	   Is this code reentrant? */
+/* this routine can be called at interrupt time via
+   malloc.  We want to make sure that the critical
+   sections of code have interrupts disabled. -RAB
+   Is this code reentrant? */
 
 	if (intr_count && priority != GFP_ATOMIC) {
+		/* 从这里可以看出，在中断上下文中，内存页的获取实时性要求还是比较高的。它会把priority强制修改成　
+		 * GFP_ATOMIC。这对于一个中断处理是非常必要的。*/
 		printk("gfp called nonatomically from interrupt %08lx\n",
-			((unsigned long *)&priority)[-1]);
+			   ((unsigned long *)&priority)[-1]);
 		priority = GFP_ATOMIC;
 	}
 	save_flags(flag);
 repeat:
 	REMOVE_FROM_MEM_QUEUE(free_page_list,nr_free_pages);
+	/* 这段代码可以看出内核对不同的内存页请求的不同处理方式：
+	   1. GFP_BUFFER: 如果freelist中没有内存页，就直接返回。
+	   2. GFP_KERNEL, GFP_USER: 如果没有内存页，就永远等待内核做内存的交换，直到分配到物理内存 
+	   3. GFP_ATOMIC: 和GFP_BUFFER一样，不会睡眠。但是会试着从secondary_page_list中释放内存 */
 	if (priority == GFP_BUFFER)
 		return 0;
 	if (priority != GFP_ATOMIC)
@@ -843,12 +858,12 @@ void si_swapinfo(struct sysinfo *val)
 			continue;
 		for (j = 0; j < swap_info[i].max; ++j)
 			switch (swap_info[i].swap_map[j]) {
-				case 128:
-					continue;
-				case 0:
-					++val->freeswap;
-				default:
-					++val->totalswap;
+			case 128:
+				continue;
+			case 0:
+				++val->freeswap;
+			default:
+				++val->totalswap;
 			}
 	}
 	val->freeswap <<= PAGE_SHIFT;

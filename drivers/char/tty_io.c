@@ -1836,9 +1836,16 @@ long tty_init(long kmem_start)
 
 	/* Setup the default TTY line discipline. */
 	memset(ldiscs, 0, sizeof(ldiscs));
+	/* line discipline是粘合底层驱动和上层API的胶水，裸的硬件输入会由line discipline进行初步的处理。
+	 * 它是对硬件数据的一种策略 
+	 * 从tty_ldisc结构体的组成成员可以看出，主要都是些函数指针，如open, close, read, write, ioctl, select等
+	 * 如果从vfs的角度看，line discipline就是vfs分发请求的目的地。 */
 	(void) tty_register_ldisc(N_TTY, &tty_ldisc_N_TTY);
 
+    /* 初始化键盘系统，设置了键盘中断的相关函数 */
 	kmem_start = kbd_init(kmem_start);
+
+    /* 初始化console, 设置中断，为字符显存分配内存 */
 	kmem_start = con_init(kmem_start);
 	kmem_start = rs_init(kmem_start);
 	return kmem_start;

@@ -57,10 +57,18 @@ extern unsigned long avenrun[];		/* Load averages */
 #define FSHIFT		11		/* nr of bits of precision */
 #define FIXED_1		(1<<FSHIFT)	/* 1.0 as fixed-point */
 #define LOAD_FREQ	(5*HZ)		/* 5 sec intervals */
-#define EXP_1		1884		/* 1/exp(5sec/1min) as fixed-point */
-#define EXP_5		2014		/* 1/exp(5sec/5min) */
+#define EXP_1		1884		/* 1/exp(5sec/1min) as fixed-point, 其实是e^(-1/12) */
+#define EXP_5		2014		/* 1/exp(5sec/5min), 其实是e^(-1/60)*/
 #define EXP_15		2037		/* 1/exp(5sec/15min) */
 
+/* 这里在用整数模拟定点小数的运算，
+ * 定点小数的格式为最后11为表示数字的小数部分
+ * 在做完定点乘法后，因为小数位数变成了22位，所以要右移FSHIF
+ * 舍掉低位 */
+/* 这里计算平均负载的方法有点像一阶指数平滑的公式
+ * average_load = history_average_load*alpha + recent_value*(1-alpha)
+ * load是历史数据，alpha就是exp, n就是recent_value
+ * 至于为什么要用自然对数，我也不知道 */
 #define CALC_LOAD(load,exp,n) \
 	load *= exp; \
 	load += n*(FIXED_1-exp); \
@@ -169,6 +177,9 @@ struct task_struct {
 	volatile long state;	/* -1 unrunnable, 0 runnable, >0 stopped */
 	long counter;
 	long priority;
+
+	/* 信号的投递在ret_from_sys_call的时候进行处理，signal表示当前产生且待投递的信号
+	 * blocked表示已经被屏蔽掉的信号 */
 	unsigned long signal;
 	unsigned long blocked;	/* bitmap of masked signals */
 	unsigned long flags;	/* per process flags, defined below */
@@ -193,6 +204,7 @@ struct task_struct {
 	 * older sibling, respectively.  (p->father can be replaced with 
 	 * p->p_pptr->pid)
 	 */
+	/* 通过这些结构体可以将进程的结构树构建出来 */
 	struct task_struct *p_opptr,*p_pptr, *p_cptr, *p_ysptr, *p_osptr;
 	struct wait_queue *wait_chldexit;	/* for wait4() */
 	/*
@@ -202,8 +214,16 @@ struct task_struct {
 	unsigned short uid,euid,suid;
 	unsigned short gid,egid,sgid;
 	unsigned long timeout;
+
+	/* it_xxx_value, it_xxx_incr是为了实现SIGVTALRM定时器而设定的变量，分别支持三种模式:
+	 * 系统真实时间的定时器，进程用户态时间的定时器，进程用户+内核总时间的定时器 */
+	/* value表示定时器的初始值，incr表示以后的间隔 */
+	/* 对virt和prof的处理在内核的时间中断处理例程sched.c/do_timer中 */
 	unsigned long it_real_value, it_prof_value, it_virt_value;
 	unsigned long it_real_incr, it_prof_incr, it_virt_incr;
+
+	/* utime是进程用户态使用CPU ticks个数的统计 */
+	/* stime是进程内核态使用CPU ticks个数的统计 */
 	long utime,stime,cutime,cstime,start_time;
 	unsigned long min_flt, maj_flt;
 	unsigned long cmin_flt, cmaj_flt;
@@ -370,6 +390,18 @@ __asm__("cmpl %%ecx,_current\n\t" \
 	"clts\n" \
 	"1:" \
 	: /* no output */ \
+     // (*(&tsk->tss.tr-4))是ljmp指令的操作数
+	 // 其中，*表示操作数是内存操作数，内存地址是tsk->tss.tr的内存地址再减去4
+     // 因为ljmp的操作数是32位offset+16位选择子，所以这样的内存操作数使得选择子为
+     // tsk->tss.tr,正好指向task在gdt中的描述符，二32位的offset在task switch中是
+     // 没有意义的
+     /* 需要关注的问题是ljmp完成后，指令会跳转到什么地方
+	  * 我们知道，发生task switch后，目的eip是在tss中指定的。对于已经运行过的进程，
+	  * eip的值其实就是ljmp后面的那条sti, 这是在task_switch时由CPU保存的。
+	  * 对于新创建的进程，eip的值是sys_fork中设置的，是ret_from_sys_call开始的那段
+	  * 从中断返回的汇编代码。而新进程的内核栈帧结构都是在sys_fork中设置好的。*/
+
+     /* 另一个值得注意的是ecx的值，当进程上台时，ecx表示先运行进程的进程结构体 */
 	:"m" (*(((char *)&tsk->tss.tr)-4)), \
 	 "c" (tsk) \
 	:"cx")

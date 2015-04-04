@@ -46,6 +46,9 @@ void time_init(void)
 	 * the time.			- Torsten
 	 */
 	/* read RTC exactly on falling edge of update flag */
+
+	/* 和RTC时钟相关的操作，不展开解释。详情查看帖子：
+	 * http://wiki.osdev.org/CMOS#Getting_Current_Date_and_Time_from_RTC */
 	for (i = 0 ; i < 1000000 ; i++)	/* may take up to 1 second... */
 		if (CMOS_READ(RTC_FREQ_SELECT) & RTC_UIP)
 			break;
@@ -71,7 +74,7 @@ void time_init(void)
 	  }
 	time.mon--;
 	xtime.tv_sec = kernel_mktime(&time);
-      }
+}
 /* 
  * The timezone where the local system is located.  Used as a default by some
  * programs who obtain this value by using gettimeofday.
