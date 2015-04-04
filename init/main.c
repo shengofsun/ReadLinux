@@ -364,6 +364,8 @@ asmlinkage void start_kernel(void)
 	memory_end = (1<<20) + (EXT_MEM_K<<10);
 	memory_end &= PAGE_MASK;
 	ramdisk_size = RAMDISK_SIZE;
+
+    /* command_line是内核的命令行参数,在初始化的时候放在内存COMMAND_LINE中,现在拷贝过来 */
 	copy_options(command_line,COMMAND_LINE);
 #ifdef CONFIG_MAX_16M
 	if (memory_end > 16*1024*1024)
@@ -396,8 +398,9 @@ asmlinkage void start_kernel(void)
 
 	/* 初始化外部的中断请求 */
 	init_IRQ();
-
+    /*初始化tss和ldt相关的数据结构*/
 	sched_init();
+    /* 分析loader传入的命令行参数 */
 	parse_options(command_line);
 #ifdef CONFIG_PROFILE
 	prof_buffer = (unsigned long *) memory_start;
@@ -405,7 +408,9 @@ asmlinkage void start_kernel(void)
 	prof_len >>= 2;
 	memory_start += prof_len * sizeof(unsigned long);
 #endif
+    /* kmalloc_init只做一些初始化的检查,位于kmalloc.c */
 	memory_start = kmalloc_init(memory_start,memory_end);
+    
 	memory_start = chr_dev_init(memory_start,memory_end);
 	memory_start = blk_dev_init(memory_start,memory_end);
 	sti();

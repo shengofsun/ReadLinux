@@ -27,7 +27,7 @@
 
 /*
  * 这段代码看上去相当蛋疼.可以想象为了使CPU在和外设通信时状态同步,内核开发者们
- * 所做的调试
+ * 所做让人吐血的调试
  */
 #ifdef SLOW_IO_BY_JUMPING
 #define __SLOW_DOWN_IO __asm__ __volatile__("jmp 1f\n1:\tjmp 1f\n1:")
@@ -45,6 +45,9 @@
 /*
  * Talk about misusing macros..
  */
+/* extern inline是C语言下的一个诡异语法.而且gcc的gnu89标准和C99标准是不一致的.
+ * 这篇帖子讲的非常好:
+ * http://www.cnblogs.com/cnmaizi/archive/2011/01/19/1939686.html　*/
 
 #define __OUT1(s,x) \
 extern inline void __out##s(unsigned x value, unsigned short port) {

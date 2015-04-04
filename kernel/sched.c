@@ -827,7 +827,7 @@ void sched_init(void)
 	   指向函数lcall7 */
 	set_ldt_desc(gdt+FIRST_LDT_ENTRY,&default_ldt,1);
 	/* 将system_call的地址设为0x80中断的入口地址，这里很奇怪的一点是, 
-	   0x80中断的dpl3是3 */
+	   0x80中断的dpl是3 */
 	set_system_gate(0x80,&system_call);
 
     /* gdt用于tss和ldt的描述符清空，task是内核的进程结构体数组。
@@ -846,6 +846,9 @@ void sched_init(void)
 	__asm__("pushfl ; andl $0xffffbfff,(%esp) ; popfl");
 	load_TR(0);
 	load_ldt(0);
+
+    /* 0x40~0x43是intel 8253定时器的控制端口. 
+     *　详细的设置格式参考：http://wiki.osdev.org/Programmable_Interval_Timer */
 	outb_p(0x34,0x43);		/* binary, mode 2, LSB/MSB, ch 0 */
 	outb_p(LATCH & 0xff , 0x40);	/* LSB */
 	outb(LATCH >> 8 , 0x40);	/* MSB */

@@ -104,7 +104,7 @@ struct size_descriptor sizes[] = {
 
 #define NBLOCKS(order)          (sizes[order].nblocks)
 #define BLOCKSIZE(order)        (sizes[order].size)
-
+ 
 
 
 long kmalloc_init (long start_mem,long end_mem)
